@@ -1,0 +1,10 @@
+nob
+*.old
+*.exe
+*.dll
+.vscode/
+include/
+lib/
+libtcc/
+tinycc/
+trash/
