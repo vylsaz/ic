@@ -317,26 +317,9 @@ int Run(
 void AppendLineNum(StrBuilder *sb, usz line)
 {
     size_t mark = nob_temp_save();
-    char *buf = nob_temp_sprintf("#line %"PRId64"\n", line);
+    char *buf = nob_temp_sprintf("#line %zu\n", line);
     nob_sb_append_cstr(sb, buf);
     nob_temp_rewind(mark);
-}
-
-void PrintErr(char const *msg)
-{
-    char* buffer = NULL;
-    DWORD dwError = GetLastError();
-    DWORD dwFlags = FORMAT_MESSAGE_MAX_WIDTH_MASK   // no newlines
-        | FORMAT_MESSAGE_ALLOCATE_BUFFER            // allocate memory
-        | FORMAT_MESSAGE_FROM_SYSTEM                // get error message
-        | FORMAT_MESSAGE_IGNORE_INSERTS;            // no argument (NULL)
-    DWORD dwResult = FormatMessageA(dwFlags, NULL, dwError, 0, (LPSTR)&buffer, 0, NULL);
-    if (dwResult==0 || buffer==NULL) {
-        fprintf(stderr, "Failed to get error message from FormatMessageA()\n");
-        return;
-    }
-    fprintf(stderr, "%s: %s\n", msg, buffer);
-    LocalFree(buffer);
 }
 
 // temp
