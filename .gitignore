@@ -2,6 +2,8 @@ nob
 *.old
 *.exe
 *.dll
+*.a
+*.o
 .vscode/
 include/
 lib/

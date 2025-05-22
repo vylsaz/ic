@@ -175,7 +175,7 @@ enum InputKind GetInput(StrBuilder *out, usz *outLine)
 
     out->count = 0;
     for (i = 0;; ++i) {
-        printf("%2lld) ", 1+line);
+        printf("%2zu) ", 1+line);
         if (GetLine(out)==0) break;
         line += 1;
         if (IsComplete(out)) break;
@@ -215,6 +215,7 @@ int Run(
         "#include <stdio.h>\n"
         "#include <stdlib.h>\n"
         "#include <string.h>\n"
+        "#include <stdbool.h>\n"
         "#include <math.h>\n"
         "#include <inttypes.h>\n"
     ;
@@ -240,9 +241,11 @@ int Run(
                 "int32_t:__printi32,int64_t:__printi64,"
                 "uint8_t:__printu8,uint16_t:__printu16,"
                 "uint32_t:__printu32,uint64_t:__printu64,"
+            #ifdef _WIN32
                 "long:__printil,unsigned long:__printul,"
+            #endif
                 "float:__printf32,double:__printf64,"
-                "_Bool:__printb,char:__printc,char*:__prints,"
+                "bool:__printb,char:__printc,char*:__prints,"
                 "default:__printp)(X);"
         "} while (0)\n"
         "void __printi8(int8_t x) {"
@@ -284,14 +287,14 @@ int Run(
     int r = -1;
     TCCState *s = tcc_new();
 
-    sprintf(lastline, "#define LASTLINE %lld\n", line);
+    sprintf(lastline, "#define LASTLINE %zu\n", line);
 
     sb.count = 0;
     nob_sb_append_cstr(&sb, include);
     nob_sb_append_buf(&sb, pre, preLen);
     nob_sb_append_buf(&sb, first, firstLen);
     nob_sb_append_cstr(&sb, prolog);
-    nob_sb_append_buf(&sb, lastline, strlen(lastline));
+    nob_sb_append_cstr(&sb, lastline);
     nob_sb_append_buf(&sb, src, srcLen);
     nob_sb_append_buf(&sb, last, lastLen);
     nob_sb_append_cstr(&sb, epilog);

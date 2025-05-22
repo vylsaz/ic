@@ -50,6 +50,8 @@ int main(int argc, char **argv)
         #else
         mkdir_if_not_exists("./libtcc");
         copy_file(TCC_DIR"/libtcc.h", "./libtcc/libtcc.h");
+        copy_file(TCC_DIR"/runmain.o", "./runmain.o");
+        copy_file(TCC_DIR"/libtcc1.a", "./libtcc1.a");
         #endif
     }
 
