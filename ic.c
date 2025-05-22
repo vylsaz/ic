@@ -1,39 +1,16 @@
 #include "libtcc/libtcc.h"
-#include <windows.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#define NOB_IMPLEMENTATION
+#include "nob.h"
 #include <assert.h>
-#include <stdint.h>
+#include <inttypes.h>
 #include <ctype.h>
 
-typedef int64_t isz;
+typedef uint64_t usz;
+typedef Nob_String_Builder StrBuilder;
 
-#define CHARRAY(S) (S), (sizeof(S)-1)
-
-typedef struct StrBuilder {
-    isz len, cap;
-    char *cstr;
-} StrBuilder;
-
-void StrBuilderAppend(StrBuilder *sb, char const *str, isz len)
+usz LastPathSep(char const *str, usz len)
 {
-    if (sb->len+len+1 > sb->cap) {
-        if (sb->cap==0) {
-            sb->cap = 256;
-        }
-        while (sb->len+len+1 > sb->cap) sb->cap *= 2;
-        sb->cstr = realloc(sb->cstr, sb->cap);
-        assert(sb->cstr);
-    }
-    memcpy(sb->cstr+sb->len, str, len);
-    sb->len += len;
-    sb->cstr[sb->len] = '\0';
-}
-
-isz LastPathSep(char const *str, isz len)
-{
-    isz i;
+    usz i;
     for (i = 0; i<len; ++i) {
         char c = str[len-i-1];
         if (c=='\\' || c=='/') return len-i-1;
@@ -41,24 +18,18 @@ isz LastPathSep(char const *str, isz len)
     return -1;
 }
 
-char SimpleLast(StrBuilder *sb) 
-{
-    if (sb->len<2) return '\0';
-    return sb->cstr[sb->len-2];
-}
-
 char LastChar(StrBuilder *sb)
 {
-    isz i;
-    for (i = 0; i<sb->len; ++i) {
-        char c = sb->cstr[sb->len-i-1];
+    usz i;
+    for (i = 0; i<sb->count; ++i) {
+        char c = sb->items[sb->count-i-1];
 
         if (c=='/' &&
-            i+1<sb->len && sb->cstr[sb->len-i-2]=='*') {
-            isz j;
-            for (j = i+2; j<sb->len; ++j) {
-                if (sb->cstr[sb->len-j-1]=='*' &&
-                    j+1<sb->len && sb->cstr[sb->len-j-2]=='/') {
+            i+1<sb->count && sb->items[sb->count-i-2]=='*') {
+            usz j;
+            for (j = i+2; j<sb->count; ++j) {
+                if (sb->items[sb->count-j-1]=='*' &&
+                    j+1<sb->count && sb->items[sb->count-j-2]=='/') {
                     i = j+1;
                     break;
                 }
@@ -94,12 +65,12 @@ enum CompleteResult IsComplete(StrBuilder *sb)
     
     enum CompleteResult r = Incomplete;
     int sgStr = 0, dbStr = 0, lnCom = 0, blCom = 0, esc = 0;
-    isz len = 0, cap = 8;
+    usz len = 0, cap = 8;
     enum Braces *stack = calloc(cap, sizeof(enum Braces));
 
-    isz i;
-    for (i = 0; i<sb->len-1; ++i) {
-        char c = sb->cstr[i];
+    usz i;
+    for (i = 0; i<sb->count-1; ++i) {
+        char c = sb->items[i];
         if (esc==1) {
             esc = 0;
             continue;
@@ -121,13 +92,13 @@ enum CompleteResult IsComplete(StrBuilder *sb)
             continue;
         }
         if (blCom) {
-            if (c=='*' && i+1<sb->len && sb->cstr[i+1]=='/') {
+            if (c=='*' && i+1<sb->count && sb->items[i+1]=='/') {
                 blCom = 0;
             }
             continue;
         }
         if (c=='(' || c=='[' || c=='{') {
-            enum Braces lef = braceFromChar[c];
+            enum Braces lef = braceFromChar[(int)c];
             if (len+1 > cap) {
                 cap *= 2;
                 stack = realloc(stack, cap*sizeof(enum Braces));
@@ -136,7 +107,7 @@ enum CompleteResult IsComplete(StrBuilder *sb)
             stack[len] = lef;
             len += 1;
         } else if (c==')' || c==']' || c=='}') {
-            enum Braces rig = braceFromChar[c];
+            enum Braces rig = braceFromChar[(int)c];
             enum Braces lef = NoBrace;
             if (len > 0) {
                 len -= 1;
@@ -151,8 +122,8 @@ enum CompleteResult IsComplete(StrBuilder *sb)
         } else if (c=='\"') {
             dbStr = !dbStr;
         } else if (c=='/') {
-            if (i+1<sb->len) {
-                char nc = sb->cstr[i+1];
+            if (i+1<sb->count) {
+                char nc = sb->items[i+1];
                 if (nc=='/') {
                     lnCom = 1;
                 } else if (nc=='*') {
@@ -166,7 +137,7 @@ enum CompleteResult IsComplete(StrBuilder *sb)
         r = Incomplete;
     } else if (len!=0) {
         r = Incomplete;
-    } else if (SimpleLast(sb)=='\\') {
+    } else if (nob_da_last(sb)=='\\') {
         r = Incomplete;
     } else {
         r = Complete;
@@ -179,12 +150,12 @@ defer:
 int GetLine(StrBuilder *out)
 {
     char inp[256] = {0};
-    isz const inpLen = sizeof(inp)-1;
+    usz const inpLen = sizeof(inp)-1;
 
     do {
         if (fgets(inp, inpLen, stdin)==NULL) return 0;
-        StrBuilderAppend(out, inp, strlen(inp));
-    } while (out->cstr[out->len-1]!='\n');
+        nob_sb_append_cstr(out, inp);
+    } while (nob_da_last(out)!='\n');
     return 1;
 }
 
@@ -197,12 +168,12 @@ enum InputKind {
     Pre,
     Shell,
 };
-enum InputKind GetInput(StrBuilder *out, isz *outLine)
+enum InputKind GetInput(StrBuilder *out, usz *outLine)
 {
-    isz i, line = *outLine;
+    usz i, line = *outLine;
     char c;
 
-    out->len = 0;
+    out->count = 0;
     for (i = 0;; ++i) {
         printf("%2lld) ", 1+line);
         if (GetLine(out)==0) break;
@@ -210,11 +181,11 @@ enum InputKind GetInput(StrBuilder *out, isz *outLine)
         if (IsComplete(out)) break;
     }
     *outLine = line;
-    if (out->len==1) return Empty;
-    if (out->cstr[0]==';') return Cmd;
-    if (out->cstr[0]=='#') return Cpp;
-    if (out->cstr[0]==':') return Pre;
-    if (out->cstr[0]=='>') return Shell;
+    if (out->count==1) return Empty;
+    if (out->items[0]==';') return Cmd;
+    if (out->items[0]=='#') return Cpp;
+    if (out->items[0]==':') return Pre;
+    if (out->items[0]=='>') return Shell;
     c = LastChar(out);
     if (c=='}' || c==';') return Stmt;
     return Expr;
@@ -233,12 +204,12 @@ void ErrFunc(void *opaque, const char *msg)
     "} while(0)\n"
 
 int Run(
-    char *tccPath, char *incPath, char *libPath, 
-    int argc, char **argv, isz line,
-    char const *pre, isz preLen, 
-    char const *first, isz firstLen, 
-    char const *src, isz srcLen, 
-    char const *last, isz lastLen)
+    char const *tccPath, char const *incPath, char const *libPath, 
+    int argc, char **argv, usz line,
+    char const *pre, usz preLen, 
+    char const *first, usz firstLen, 
+    char const *src, usz srcLen, 
+    char const *last, usz lastLen)
 {
     static char include[] = 
         "#include <stdio.h>\n"
@@ -315,15 +286,16 @@ int Run(
 
     sprintf(lastline, "#define LASTLINE %lld\n", line);
 
-    sb.len = 0;
-    StrBuilderAppend(&sb, CHARRAY(include));
-    StrBuilderAppend(&sb, pre, preLen);
-    StrBuilderAppend(&sb, first, firstLen);
-    StrBuilderAppend(&sb, CHARRAY(prolog));
-    StrBuilderAppend(&sb, lastline, strlen(lastline));
-    StrBuilderAppend(&sb, src, srcLen);
-    StrBuilderAppend(&sb, last, lastLen);
-    StrBuilderAppend(&sb, CHARRAY(epilog));
+    sb.count = 0;
+    nob_sb_append_cstr(&sb, include);
+    nob_sb_append_buf(&sb, pre, preLen);
+    nob_sb_append_buf(&sb, first, firstLen);
+    nob_sb_append_cstr(&sb, prolog);
+    nob_sb_append_buf(&sb, lastline, strlen(lastline));
+    nob_sb_append_buf(&sb, src, srcLen);
+    nob_sb_append_buf(&sb, last, lastLen);
+    nob_sb_append_cstr(&sb, epilog);
+    nob_sb_append_null(&sb);
 
     tcc_set_error_func(s, NULL, ErrFunc);
     tcc_set_lib_path(s, tccPath);
@@ -333,7 +305,7 @@ int Run(
     for (int i = 1; i<argc; ++i) {
         tcc_set_options(s, argv[i]);
     }
-    r = tcc_compile_string(s, sb.cstr);
+    r = tcc_compile_string(s, sb.items);
     if (r!=-1) {
         r = tcc_run(s, 0, (char *[]){NULL});
     }
@@ -342,11 +314,12 @@ int Run(
     return r;
 }
 
-void AppendLineNum(StrBuilder *sb, isz line)
+void AppendLineNum(StrBuilder *sb, usz line)
 {
-    char buf[100] = {0};
-    sprintf(buf, "#line %d\n", line);
-    StrBuilderAppend(sb, buf, strlen(buf));
+    size_t mark = nob_temp_save();
+    char *buf = nob_temp_sprintf("#line %"PRId64"\n", line);
+    nob_sb_append_cstr(sb, buf);
+    nob_temp_rewind(mark);
 }
 
 void PrintErr(char const *msg)
@@ -366,91 +339,81 @@ void PrintErr(char const *msg)
     LocalFree(buffer);
 }
 
-void SpawnShell(char const *sh, isz len)
+// temp
+void ParseShell(char const *sh, usz len, Nob_Cmd *cmd)
 {
-    STARTUPINFO si;
-    PROCESS_INFORMATION pi;
-    DWORD exit_status;
-    char *arg; 
-    isz i, j;
+    usz i;
+    int inQuote = 0, wasSpace = 0;
+    Nob_String_View sv = nob_sv_from_parts(sh, len);
+    StrBuilder sb = {0};
 
-    ZeroMemory(&si, sizeof(STARTUPINFO));
-    si.cb = sizeof(STARTUPINFO);
-    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-    si.dwFlags |= STARTF_USESTDHANDLES;
+    #define FINISH_ARG do {\
+        nob_sb_append_null(&sb);\
+        nob_da_append(cmd, nob_temp_strdup(sb.items));\
+        sb.count = 0;} while (0)
 
-    ZeroMemory(&pi, sizeof(PROCESS_INFORMATION));
-
-    for (i = 0; i<len; ++i) { if (!isspace(sh[i])) break; }
-    for (j = 0; j<len; ++j) { if (!isspace(sh[len-1-j])) break; }
-    arg = calloc(1+len-i-j, sizeof(char));
-    memcpy(arg, sh+i, len-i-j);
-
-    if (CreateProcessA(NULL, arg, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)==0) {
-        PrintErr("Could not run command");
-        goto final;
+    sv = nob_sv_trim(sv);
+    for (i = 0; i<sv.count; ++i) {
+        char c = sv.data[i];
+        if (inQuote==1) {
+            wasSpace = 0;
+            if (c!='\'') {
+                nob_da_append(&sb, c);
+            } else if (i+1<sv.count && sv.data[i+1]=='\'') {
+                nob_da_append(&sb, c); ++i;
+            } else {
+                inQuote = 0;
+            }
+        } else if (c=='\'') {
+            inQuote = 1;
+            wasSpace = 0;
+        } else if (c==' ') {
+            if (wasSpace==0) FINISH_ARG;
+            wasSpace = 1;
+        } else { 
+            wasSpace = 0;
+            nob_da_append(&sb, c);
+        }
     }
-    CloseHandle(pi.hThread);
+    FINISH_ARG;
 
-    if (WaitForSingleObject(pi.hProcess, INFINITE)==WAIT_FAILED) {
-        PrintErr("Could not wait on child process");
-        goto final;
-    }
-    if (GetExitCodeProcess(pi.hProcess, &exit_status)==0) {
-        PrintErr("Could not get process exit code");
-        goto final;
-    }
-    if (exit_status!=0) {
-        fprintf(stderr, "Command exited with exit code %lu\n", exit_status);
-    }
-    CloseHandle(pi.hProcess);
-final:
-    free(arg);
+    #undef FINISG_ARG
+    nob_sb_free(sb);
+}
+
+void SpawnShell(char const *sh, usz len)
+{
+    Nob_Cmd cmd = {0};
+    size_t mark = nob_temp_save();
+    ParseShell(sh, len, &cmd);
+    nob_cmd_run_sync(cmd);
+    nob_temp_rewind(mark);
+    nob_da_free(cmd);
 }
 
 int main(int argc, char **argv)
 {
-    char const inc[] = "include";
-    isz const incLen = sizeof(inc)-1;
-    char const lib[] = "lib";
-    isz const libLen = sizeof(lib)-1;
-    isz line = 0;
+    usz line = 0;
     StrBuilder out = {0}, pre = {0}, first = {0}, 
         src = {0}, last = {0};
-    char *tccPath, *incPath, *libPath;
-    isz sep = 1+LastPathSep(argv[0], strlen(argv[0]));
+    char const *tccPath = nob_get_current_dir_temp();
+    char const *incPath = nob_temp_sprintf("%s/include", tccPath);
+    char const *libPath = nob_temp_sprintf("%s/lib", tccPath);
 
-    tccPath = calloc(1+sep, sizeof(char));
-    memcpy(tccPath, argv[0], sep);
-    incPath = calloc(1+sep+incLen, sizeof(char));
-    memcpy(incPath, tccPath, sep);
-    memcpy(incPath+sep, inc, incLen);
-    libPath = calloc(1+sep+libLen, sizeof(char));
-    memcpy(libPath, tccPath, sep);
-    memcpy(libPath+sep, lib, libLen);
+    nob_minimal_log_level = NOB_WARNING;
 
     puts("Type \";h\" for help");
-
-    StrBuilderAppend(&pre, "", 0);
-    StrBuilderAppend(&first, "", 0);
-    StrBuilderAppend(&src, "", 0);
-    StrBuilderAppend(&last, "", 0);
     for (;;) {
-        isz len, outLine = line;
-        char *s;
+        usz outLine = line;
         enum InputKind kind = GetInput(&out, &outLine);
-        s = out.cstr;
-        len = out.len;
         if (kind==Empty) {
             continue;
         } else if (kind==Shell) {
-            SpawnShell(s+1, len-1);
+            SpawnShell(out.items+1, out.count-1);
         } else if (kind==Cmd) {
-            switch (s[1]) {
+            switch (out.items[1]) {
             default:
-                printf("Unknown command \"%.*s\"\n", len-1, s);
+                printf("Unknown command \"%.*s\"\n", (int)out.count-1, out.items);
             break; case 'h':
                 printf("%s",
                     ";h -- show this help message\n"
@@ -464,51 +427,51 @@ int main(int argc, char **argv)
             break; case 'q':
                 goto endloop;
             break; case 'l':
-                printf("%.*s", pre.len, pre.cstr);
+                printf("%.*s", (int)pre.count, pre.items);
                 printf("/* main */\n");
-                printf("%.*s", src.len, src.cstr);
+                printf("%.*s", (int)src.count, src.items);
             break; case 'c':
-                pre.len = 0;
-                src.len = 0;
+                pre.count = 0;
+                src.count = 0;
                 line = 0;
             }
         } else {
             int ok;
 
-            last.len = 0;
+            last.count = 0;
             if (kind==Stmt) {
                 AppendLineNum(&last, 1+line);
-                StrBuilderAppend(&last, s, len);
+                nob_sb_append_buf(&last, out.items, out.count);
             } else if (kind==Expr) {
                 AppendLineNum(&last, 1+line);
-                StrBuilderAppend(&last, CHARRAY("PRINT(("));
-                StrBuilderAppend(&last, s, len-1);
-                StrBuilderAppend(&last, CHARRAY("));\n"));
+                nob_sb_append_cstr(&last, "PRINT((");
+                nob_sb_append_buf(&last, out.items, out.count-1);
+                nob_sb_append_cstr(&last, "));\n");
             }
 
-            first.len = 0;
+            first.count = 0;
             if (kind==Pre) {
                 AppendLineNum(&first, 1+line);
-                StrBuilderAppend(&first, s+1, len-1);
+                nob_sb_append_buf(&first, out.items+1, out.count-1);
             } else if (kind==Cpp) {
                 AppendLineNum(&first, 1+line);
-                StrBuilderAppend(&first, s, len);
+                nob_sb_append_buf(&first, out.items, out.count);
             }
 
             ok = Run(
                 tccPath, incPath, libPath,
                 argc, argv, line,
-                pre.cstr, pre.len,
-                first.cstr, first.len,
-                src.cstr, src.len,
-                last.cstr, last.len) >= 0;
+                pre.items, pre.count,
+                first.items, first.count,
+                src.items, src.count,
+                last.items, last.count) >= 0;
             if (ok) {
                 if (kind==Stmt) {
                     line = outLine;
-                    StrBuilderAppend(&src, last.cstr, last.len);
+                    nob_sb_append_buf(&src, last.items, last.count);
                 } else if (kind==Pre || kind==Cpp) {
                     line = outLine;
-                    StrBuilderAppend(&pre, first.cstr, first.len);
+                    nob_sb_append_buf(&pre, first.items, first.count);
                 }
             }
         }
