@@ -49,7 +49,7 @@ int main(int argc, char **argv)
         copy_directory_recursively(TCC_DIR"/libtcc", "./libtcc");
         #else
         mkdir_if_not_exists("./libtcc");
-        copy_file(TCC_DIR"/libtcc.h", "./libtcc/libtcc.h")
+        copy_file(TCC_DIR"/libtcc.h", "./libtcc/libtcc.h");
         #endif
     }
 
