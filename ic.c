@@ -408,7 +408,7 @@ int main(int argc, char **argv)
     StrBuilder out = {0}, pre = {0}, first = {0}, 
         src = {0}, last = {0};
     Nob_Cmd opt = {0};
-    char const *tccPath = GetExePath(); printf("%s\n", tccPath);
+    char const *tccPath = GetExePath();
     char const *incPath = nob_temp_sprintf("%s/include", tccPath);
     char const *libPath = nob_temp_sprintf("%s/lib", tccPath);
 
