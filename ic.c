@@ -8,6 +8,11 @@
 typedef uint64_t usz;
 typedef Nob_String_Builder StrBuilder;
 
+typedef struct Options {
+    char **items;
+    usz capacity, count;
+} Options;
+
 usz LastPathSep(char const *str, usz len)
 {
     usz i;
@@ -204,8 +209,8 @@ void ErrFunc(void *opaque, const char *msg)
     "} while(0)\n"
 
 int Run(
-    char const *tccPath, char const *incPath, char const *libPath, 
-    int argc, char **argv, usz line,
+    char const *tccPath, char const *incPath, char const *libPath, usz line,
+    char const **opt, usz optLen,
     char const *pre, usz preLen, 
     char const *first, usz firstLen, 
     char const *src, usz srcLen, 
@@ -245,7 +250,8 @@ int Run(
                 "long:__printil,unsigned long:__printul,"
             #endif
                 "float:__printf32,double:__printf64,"
-                "bool:__printb,char:__printc,char*:__prints,"
+                "bool:__printb,char:__printc,"
+                "char*:__prints,char const*:__printcs,"
                 "default:__printp)(X);"
         "} while (0)\n"
         "void __printi8(int8_t x) {"
@@ -276,6 +282,7 @@ int Run(
         "void __printb(_Bool x) {printf(\"%s\\n\",x?\"true\":\"false\");}\n"
         "void __printc(char x) {printf(\"%c\\n\",x);}\n"
         "void __prints(char *x) {printf(\"%s\\n\",x);}\n"
+        "void __printcs(char const*x) {printf(\"%s\\n\",x);}\n"
         "void __printp(void *x) {printf(\"0x%p\\n\",x);}\n"
         PATCH(printf) PATCH(puts) PATCH(putchar)
         "int main(int argc, char **argv) {\n"
@@ -305,8 +312,8 @@ int Run(
     tcc_add_sysinclude_path(s, incPath);
     tcc_add_library_path(s, libPath);
     tcc_set_output_type(s, TCC_OUTPUT_MEMORY);
-    for (int i = 1; i<argc; ++i) {
-        tcc_set_options(s, argv[i]);
+    for (usz i = 0; i<optLen; ++i) {
+        tcc_set_options(s, opt[i]);
     }
     r = tcc_compile_string(s, sb.items);
     if (r!=-1) {
@@ -377,16 +384,39 @@ void SpawnShell(char const *sh, usz len)
     nob_da_free(cmd);
 }
 
+char *GetExePath(void)
+{
+    char *exe; int len, sep;
+#ifdef _WIN32
+    assert(_get_pgmptr(&exe)==0);
+    len = strlen(exe);
+#elif defined(__linux__)
+    char buf[1+FILENAME_MAX] = {0};
+    len = readlink("/proc/self/exe", buf, sizeof buf);
+    assert(len!=-1);
+    exe = buf;
+#else
+#error TODO
+#endif
+    sep = LastPathSep(exe, len);
+    return nob_temp_sprintf("%.*s", sep, exe);
+}
+
 int main(int argc, char **argv)
 {
     usz line = 0;
     StrBuilder out = {0}, pre = {0}, first = {0}, 
         src = {0}, last = {0};
-    char const *tccPath = nob_get_current_dir_temp();
+    Nob_Cmd opt = {0};
+    char const *tccPath = GetExePath(); printf("%s\n", tccPath);
     char const *incPath = nob_temp_sprintf("%s/include", tccPath);
     char const *libPath = nob_temp_sprintf("%s/lib", tccPath);
 
     nob_minimal_log_level = NOB_WARNING;
+
+    for (int i = 1; i<argc; ++i) {
+        nob_da_append(&opt, argv[i]);
+    }
 
     puts("Type \";h\" for help");
     for (;;) {
@@ -406,6 +436,9 @@ int main(int argc, char **argv)
                     ";q -- quit\n"
                     ";l -- list recorded code\n"
                     ";c -- clear recorded code\n"
+                    ";o -- list current compiler options\n"
+                    ";oc -- clear compiler options\n"
+                    ";o[...] -- append new compiler options\n"
                     "#[...] -- C preprocessor\n"
                     ":[...] -- Statements outside of main\n"
                     ">[...] -- Execute shell command\n"
@@ -420,6 +453,19 @@ int main(int argc, char **argv)
                 pre.count = 0;
                 src.count = 0;
                 line = 0;
+            break; case 'o':
+                if (out.count-1<=2) {
+                    // noop
+                } else if (out.items[2]=='c') {
+                    opt.count = 0;
+                } else {
+                    ParseShell(out.items+2, out.count-2, &opt);
+                }
+                printf("current options:");
+                for (usz i = 0; i<opt.count; ++i) {
+                    printf(" '%s'", opt.items[i]);
+                }
+                printf("\n");
             }
         } else {
             int ok;
@@ -445,8 +491,8 @@ int main(int argc, char **argv)
             }
 
             ok = Run(
-                tccPath, incPath, libPath,
-                argc, argv, line,
+                tccPath, incPath, libPath, line,
+                opt.items, opt.count,
                 pre.items, pre.count,
                 first.items, first.count,
                 src.items, src.count,
