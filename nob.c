@@ -55,9 +55,15 @@ int main(int argc, char **argv)
         #endif
     }
 
+    #ifdef _WIN32
+    #define OUTPUT "ic.exe"
+    #else
+    #define OUTPUT "ic"
+    #endif
+
     nob_cc(&cmd);
     nob_cc_flags(&cmd);
-    nob_cc_output(&cmd, "ic.exe");
+    nob_cc_output(&cmd, OUTPUT);
     nob_cc_inputs(&cmd, "./ic.c");
     cmd_append(&cmd, "-L.");
     cmd_append(&cmd, "-ltcc");

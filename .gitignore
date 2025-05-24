@@ -4,6 +4,7 @@ nob
 *.dll
 *.a
 *.o
+ic
 .vscode/
 include/
 lib/
