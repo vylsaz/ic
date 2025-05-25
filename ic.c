@@ -202,6 +202,24 @@ void ErrFunc(void *opaque, const char *msg)
     fprintf(stderr, "%s\n", msg);
 }
 
+#define BIN_FUNCTION(BITS) \
+    "char *__bin"#BITS"(int"#BITS"_t x) {"\
+        "static char b["#BITS"+"#BITS"/4] = {0};"\
+        "int o = 0;" \
+        "for (int i = 0; i<"#BITS"; ++i) {" \
+            "if (i>0 && i%4==0) b[o++] = '_';" \
+            "b[o++] = x<0?'1':'0'; x <<= 1;"\
+        "}"\
+        "b[o] = 0; return b;"\
+    "}\n"
+#define GEN_BIN(BITS) "int"#BITS"_t:__bin"#BITS",uint"#BITS"_t:__bin"#BITS","
+
+#ifdef _WIN32
+#define PTR_FMT "0x%p"
+#else
+#define PTR_FMT "%p"
+#endif
+
 #define PATCH(FUNC) \
 "#define "#FUNC"(...) "\
     "do {"\
@@ -224,17 +242,7 @@ int Run(
         "#include <math.h>\n"
         "#include <inttypes.h>\n"
     ;
-    #define BIN_FUNCTION(BITS) \
-        "char *__bin"#BITS"(int"#BITS"_t x) {"\
-            "static char b["#BITS"+"#BITS"/4] = {0};"\
-            "int o = 0;" \
-            "for (int i = 0; i<"#BITS"; ++i) {" \
-                "if (i>0 && i%4==0) b[o++] = '_';" \
-                "b[o++] = x<0?'1':'0'; x <<= 1;"\
-            "}"\
-            "b[o] = 0; return b;"\
-        "}\n"
-    #define GEN_BIN(BITS) "int"#BITS"_t:__bin"#BITS",uint"#BITS"_t:__bin"#BITS","
+    
     static char prolog[] = 
         BIN_FUNCTION(8) BIN_FUNCTION(16) BIN_FUNCTION(32) BIN_FUNCTION(64)
         "#define BIN(X) _Generic((X),"
@@ -283,7 +291,22 @@ int Run(
         "void __printc(char x) {printf(\"%c\\n\",x);}\n"
         "void __prints(char *x) {printf(\"%s\\n\",x);}\n"
         "void __printcs(char const*x) {printf(\"%s\\n\",x);}\n"
-        "void __printp(void *x) {printf(\"0x%p\\n\",x);}\n"
+        "void __printp(void *x) {printf(\""PTR_FMT"\\n\",x);}\n"
+        "void __printmem(void *x, size_t sz) {"
+            "size_t i, j, k; uint8_t *a = x;"
+            "puts(\"Offset(h)  00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f  Decoded Text\");"
+            "printf(\"000000000  \");"
+            "for (i = 0; i<sz; ++i) {"
+                "printf(\"%02"PRIx8" \", a[i]);"
+                "if ((i+1)%16==0) {printf(\" \");"
+                    "for (j = 16*(i/16); j<=i; ++j)" 
+                        "if (a[j]<=126 && a[j]>=33) printf(\"%c\",a[j]); else printf(\".\");"
+                    "printf(\"\\n%09"PRIx64"  \", i+1);}}"
+            "if ((k = i%16)!=0) {"
+                "for (j = 0; j<16-k; ++j) printf(\"   \"); printf(\" \");"
+                "for (j = i-k; j<i; ++j)" 
+                    "if (a[j]<=126 && a[j]>=33) printf(\"%c\",a[j]); else printf(\".\");"
+                "puts(\"\");}}\n"
         PATCH(printf) PATCH(puts) PATCH(putchar)
         "int main(int argc, char **argv) {\n"
         "(void) argc; (void) argv;\n"
@@ -404,6 +427,7 @@ char *GetExePath(void)
 
 int main(int argc, char **argv)
 {
+    int ok;
     usz line = 0;
     StrBuilder out = {0}, pre = {0}, first = {0}, 
         src = {0}, last = {0};
@@ -436,12 +460,14 @@ int main(int argc, char **argv)
                     ";q -- quit\n"
                     ";l -- list recorded code\n"
                     ";c -- clear recorded code\n"
-                    ";o -- list current compiler options\n"
-                    ";oc -- clear compiler options\n"
+                    ";o      -- list current compiler options\n"
                     ";o[...] -- append new compiler options\n"
-                    "#[...] -- C preprocessor\n"
-                    ":[...] -- Statements outside of main\n"
-                    ">[...] -- Execute shell command\n"
+                    ";O      -- clear compiler options\n"
+                    ";p expr -- print a struct or array\n"
+                    ";P x,sz -- print memory x with size sz\n"
+                    "#[...]  -- C preprocessor\n"
+                    ":[...]  -- Statements outside of main\n"
+                    ">[...]  -- Execute shell command\n"
                 );
             break; case 'q':
                 goto endloop;
@@ -453,12 +479,11 @@ int main(int argc, char **argv)
                 pre.count = 0;
                 src.count = 0;
                 line = 0;
+            break; case 'O':
+                opt.count = 0;
+                printf("cleared options");
             break; case 'o':
-                if (out.count-1<=2) {
-                    // noop
-                } else if (out.items[2]=='c') {
-                    opt.count = 0;
-                } else {
+                if (out.count-1>2) {
                     ParseShell(out.items+2, out.count-2, &opt);
                 }
                 printf("current options:");
@@ -466,10 +491,30 @@ int main(int argc, char **argv)
                     printf(" '%s'", opt.items[i]);
                 }
                 printf("\n");
+            break; case 'p':
+                if (out.count-1>2) {
+                    first.count = 0;
+                    last.count = 0;
+                    AppendLineNum(&last, 1+line);
+                    nob_sb_append_cstr(&last, "__printmem(&(");
+                    nob_sb_append_buf(&last, out.items+2, out.count-3);
+                    nob_sb_append_cstr(&last, "),sizeof(");
+                    nob_sb_append_buf(&last, out.items+2, out.count-3);
+                    nob_sb_append_cstr(&last, "));\n");
+                    goto run_label;
+                }
+            break; case 'P':
+                if (out.count-1>2) {
+                    first.count = 0;
+                    last.count = 0;
+                    AppendLineNum(&last, 1+line);
+                    nob_sb_append_cstr(&last, "__printmem(");
+                    nob_sb_append_buf(&last, out.items+2, out.count-3);
+                    nob_sb_append_cstr(&last, ");\n");
+                    goto run_label;
+                }
             }
         } else {
-            int ok;
-
             last.count = 0;
             if (kind==Stmt) {
                 AppendLineNum(&last, 1+line);
@@ -489,7 +534,7 @@ int main(int argc, char **argv)
                 AppendLineNum(&first, 1+line);
                 nob_sb_append_buf(&first, out.items, out.count);
             }
-
+        run_label:
             ok = Run(
                 tccPath, incPath, libPath, line,
                 opt.items, opt.count,
