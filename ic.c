@@ -23,6 +23,32 @@ usz LastPathSep(char const *str, usz len)
     return -1;
 }
 
+char *GetExe(int *outlen)
+{
+    char *exe; int len;
+#ifdef _WIN32
+    assert(_get_pgmptr(&exe)==0);
+    len = strlen(exe);
+#elif defined(__linux__)
+    char buf[1+FILENAME_MAX] = {0};
+    len = readlink("/proc/self/exe", buf, sizeof buf);
+    assert(len!=-1);
+    exe = buf;
+#else
+#error TODO
+#endif
+    if (outlen!=NULL) *outlen = len;
+    return exe;
+}
+
+char *GetExePath(void)
+{
+    char *exe; int len, sep;
+    exe = GetExe(&len);
+    sep = LastPathSep(exe, len);
+    return nob_temp_sprintf("%.*s", sep, exe);
+}
+
 char LastChar(StrBuilder *sb)
 {
     usz i;
@@ -229,6 +255,7 @@ void ErrFunc(void *opaque, const char *msg)
 int Run(
     char const *tccPath, char const *incPath, char const *libPath, usz line,
     char const **opt, usz optLen,
+    char const **arg, usz argLen,
     char const *pre, usz preLen, 
     char const *first, usz firstLen, 
     char const *src, usz srcLen, 
@@ -316,6 +343,13 @@ int Run(
     static StrBuilder sb = {0};
     int r = -1;
     TCCState *s = tcc_new();
+    usz i, mark = nob_temp_save();
+    char **myArgs = nob_temp_alloc((1+argLen)*sizeof(char *));
+
+    myArgs[0] = nob_temp_strdup(GetExe(NULL));
+    for (i = 0; i<argLen; ++i) {
+        myArgs[1+i] = nob_temp_strdup(arg[i]);
+    }
 
     sprintf(lastline, "#define LASTLINE %zu\n", line);
 
@@ -340,9 +374,10 @@ int Run(
     }
     r = tcc_compile_string(s, sb.items);
     if (r!=-1) {
-        r = tcc_run(s, 0, (char *[]){NULL});
+        r = tcc_run(s, 1+argLen, myArgs);
     }
     tcc_delete(s);
+    nob_temp_rewind(mark);
 
     return r;
 }
@@ -407,31 +442,13 @@ void SpawnShell(char const *sh, usz len)
     nob_da_free(cmd);
 }
 
-char *GetExePath(void)
-{
-    char *exe; int len, sep;
-#ifdef _WIN32
-    assert(_get_pgmptr(&exe)==0);
-    len = strlen(exe);
-#elif defined(__linux__)
-    char buf[1+FILENAME_MAX] = {0};
-    len = readlink("/proc/self/exe", buf, sizeof buf);
-    assert(len!=-1);
-    exe = buf;
-#else
-#error TODO
-#endif
-    sep = LastPathSep(exe, len);
-    return nob_temp_sprintf("%.*s", sep, exe);
-}
-
 int main(int argc, char **argv)
 {
-    int ok;
+    int ok, argStart = 0;
     usz line = 0;
     StrBuilder out = {0}, pre = {0}, first = {0}, 
         src = {0}, last = {0};
-    Nob_Cmd opt = {0};
+    Nob_Cmd opt = {0}, arg = {0};
     char const *tccPath = GetExePath();
     char const *incPath = nob_temp_sprintf("%s/include", tccPath);
     char const *libPath = nob_temp_sprintf("%s/lib", tccPath);
@@ -439,7 +456,17 @@ int main(int argc, char **argv)
     nob_minimal_log_level = NOB_WARNING;
 
     for (int i = 1; i<argc; ++i) {
-        nob_da_append(&opt, argv[i]);
+        char *a = argv[i];
+        if (strcmp(a, "-h")==0 || strcmp(a, "--help")==0) {
+            printf(
+                "Usage: %s [compiler options...] [-- program argv...]\n"
+                , argv[0]
+            );
+            return 0;
+        }
+        if (strcmp(a, "--")==0) argStart = 1;
+        else if (argStart) nob_da_append(&arg, a);
+        else nob_da_append(&opt, a);
     }
 
     puts("Type \";h\" for help");
@@ -463,6 +490,9 @@ int main(int argc, char **argv)
                     ";o      -- list current compiler options\n"
                     ";o[...] -- append new compiler options\n"
                     ";O      -- clear compiler options\n"
+                    ";a      -- list current arguments\n"
+                    ";a[...] -- append new arguments\n"
+                    ";A      -- clear arguments\n"
                     ";p expr -- print a struct or array\n"
                     ";P x,sz -- print memory x with size sz\n"
                     "#[...]  -- C preprocessor\n"
@@ -479,9 +509,21 @@ int main(int argc, char **argv)
                 pre.count = 0;
                 src.count = 0;
                 line = 0;
+            break; case 'A':
+                arg.count = 0;
+                puts("cleared arguments");
+            break; case 'a':
+                if (out.count-1>2) {
+                    ParseShell(out.items+2, out.count-2, &arg);
+                }
+                printf("current arguments:");
+                for (usz i = 0; i<arg.count; ++i) {
+                    printf(" '%s'", arg.items[i]);
+                }
+                puts("");
             break; case 'O':
                 opt.count = 0;
-                printf("cleared options");
+                puts("cleared options");
             break; case 'o':
                 if (out.count-1>2) {
                     ParseShell(out.items+2, out.count-2, &opt);
@@ -490,7 +532,7 @@ int main(int argc, char **argv)
                 for (usz i = 0; i<opt.count; ++i) {
                     printf(" '%s'", opt.items[i]);
                 }
-                printf("\n");
+                puts("");
             break; case 'p':
                 if (out.count-1>2) {
                     first.count = 0;
@@ -538,6 +580,7 @@ int main(int argc, char **argv)
             ok = Run(
                 tccPath, incPath, libPath, line,
                 opt.items, opt.count,
+                arg.items, arg.count,
                 pre.items, pre.count,
                 first.items, first.count,
                 src.items, src.count,
