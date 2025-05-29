@@ -222,6 +222,26 @@ enum InputKind GetInput(StrBuilder *out, usz *outLine)
     return Expr;
 }
 
+void SimpleQuote(char const **opt, usz optLen, StrBuilder *out)
+{
+    for (usz i = 0; i<optLen; ++i) {
+        char const *o = opt[i];
+        usz len = strlen(o);
+        nob_da_append(out, '\"');
+        for (usz j = 0; j < len; ++j) {
+            char x = o[j];
+            switch (x) {
+            case '\\': nob_sb_append_cstr(out, "\\\\"); break;
+            case '\"': nob_sb_append_cstr(out, "\\\""); break;
+            default:   nob_da_append(out, x);           break;
+            }
+        }
+        nob_da_append(out, '\"');
+        if (i+1<optLen) nob_da_append(out, ' ');
+    }
+    nob_sb_append_null(out);
+}
+
 void ErrFunc(void *opaque, const char *msg)
 {
     (void) opaque;
@@ -340,7 +360,7 @@ int Run(
         ;
     static char epilog[] = "return 0;\n}\n";
     char lastline[256] = {0};
-    static StrBuilder sb = {0};
+    static StrBuilder sb = {0}, sbo = {0};
     int r = -1;
     TCCState *s = tcc_new();
     usz i, mark = nob_temp_save();
@@ -364,14 +384,15 @@ int Run(
     nob_sb_append_cstr(&sb, epilog);
     nob_sb_append_null(&sb);
 
+    sbo.count = 0;
+    SimpleQuote(opt, optLen, &sbo);
+
     tcc_set_error_func(s, NULL, ErrFunc);
     tcc_set_lib_path(s, tccPath);
     tcc_add_sysinclude_path(s, incPath);
     tcc_add_library_path(s, libPath);
     tcc_set_output_type(s, TCC_OUTPUT_MEMORY);
-    for (usz i = 0; i<optLen; ++i) {
-        tcc_set_options(s, opt[i]);
-    }
+    tcc_set_options(s, sbo.items);
     r = tcc_compile_string(s, sb.items);
     if (r!=-1) {
         r = tcc_run(s, 1+argLen, myArgs);
