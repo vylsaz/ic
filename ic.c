@@ -375,12 +375,14 @@ void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
             "printf(\"%\"PRIu32\" = 0x%08\"PRIX32\"\\n\",x,x);}\n"
         "void __printu64(uint64_t x) {"
             "printf(\"%\"PRIu64\" = 0x%016\"PRIX64\"\\n\",x,x);}\n"
+    #ifdef _WIN32
         "void __printil(long x) {printf(\"%ld = \",x);"
             "if (4==sizeof(long)) printf(\"0x%08\"PRIX32\"\\n\",x);"
             "else printf(\"0x%016\"PRIX64\"\\n\",x);}\n"
         "void __printul(unsigned long x) {printf(\"%lu = \",x);"
             "if (4==sizeof(long)) printf(\"0x%08\"PRIX32\"\\n\",x);"
             "else printf(\"0x%016\"PRIX64\"\\n\",x);}\n"
+    #endif
         "void __printf32(double x) {printf(\"%g\\n\",x);}\n"
         "void __printf64(float x) {printf(\"%g\\n\",x);}\n"
         "void __printb(_Bool x) {printf(\"%s\\n\",x?\"true\":\"false\");}\n"
