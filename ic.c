@@ -11,11 +11,6 @@
 typedef uint64_t usz;
 typedef Nob_String_Builder StrBuilder;
 
-typedef struct Options {
-    char **items;
-    usz capacity, count;
-} Options;
-
 usz LastPathSep(char const *str, usz len)
 {
     usz i;
@@ -296,6 +291,29 @@ void SpawnShell(char const *sh, usz len)
     nob_da_free(cmd);
 }
 
+// temp
+char *GetCC(void)
+{
+#ifdef _WIN32
+    static WCHAR buf[32767]; 
+    int len; char *str;
+    ZeroMemory(&buf, sizeof(buf));
+    if (GetEnvironmentVariableW(L"CC", (LPWSTR)&buf, 32767)==0) {
+        return NULL;
+    }
+    len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, NULL, 0, NULL, NULL);
+    str = nob_temp_alloc(len);
+    WideCharToMultiByte(CP_UTF8, 0, buf, -1, str, len, NULL, NULL);
+    return str;
+#else
+    char *str = getenv("CC");
+    if (str==NULL) {
+        return NULL;
+    }
+    return nob_temp_strdup(str);
+#endif
+}
+
 void ErrFunc(void *opaque, const char *msg)
 {
     (void) opaque;
@@ -470,19 +488,24 @@ int Run(RunType rt,
     if (rt!=RT_CC) nob_sb_append_null(&sbSrc);
 
     if (rt==RT_CC) {
+        Nob_Cmd cc = {0};
+        char *ccc;
         Nob_Log_Level old = nob_minimal_log_level;
         char const *inpPath = nob_temp_sprintf("%s/_ic.c", GetExePath());
         nob_write_entire_file(inpPath, sbSrc.items, sbSrc.count);
 
-        Nob_Cmd cc = {0};
-        nob_da_append(&cc, "cc");
+        ccc = GetCC();
+        if (ccc==NULL) {
+            nob_cc(&cc);
+        } else {
+            nob_cmd_append(&cc, ccc);
+        }
         for (usz i = 0; i<opt->count; ++i) {
             nob_da_append(&cc, opt->items[i]);
         }
         nob_da_append(&cc, "-shared");
-        nob_da_append(&cc, "-o");
-        nob_da_append(&cc, outPath);
-        nob_da_append(&cc, inpPath);
+        nob_cc_output(&cc, outPath);
+        nob_cc_inputs(&cc, inpPath);
         nob_minimal_log_level = NOB_WARNING;
 
         if (!nob_cmd_run(&cc)) {
@@ -531,6 +554,9 @@ int Run(RunType rt,
 
     if (ic_main!=NULL) {
         r = ic_main(myArgsLen, myArgs);
+    } else {
+        nob_log(NOB_ERROR, "%s\n", "failed to get compiled function");
+        r = -1;
     }
 
 end:

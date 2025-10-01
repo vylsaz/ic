@@ -19,7 +19,7 @@ int main(int argc, char **argv)
 
     if (!file_exists("./tinycc")) {
         cmd_append(&cmd, "git", "clone", "git://repo.or.cz/tinycc.git");
-        if (!cmd_run_sync_and_reset(&cmd)) return 1;
+        if (!cmd_run(&cmd)) return 1;
     }
     
     int rebuild_is_needed = 0;
@@ -31,14 +31,14 @@ int main(int argc, char **argv)
         #ifdef _WIN32
         set_current_dir("./tinycc/win32");
         cmd_append(&cmd, "cmd.exe", "/c", ".\\build-tcc.bat");
-        if (!cmd_run_sync_and_reset(&cmd)) return 1;
+        if (!cmd_run(&cmd)) return 1;
         set_current_dir("../..");
         #else
         set_current_dir("./tinycc");
         cmd_append(&cmd, "./configure");
-        if (!cmd_run_sync_and_reset(&cmd)) return 1;
+        if (!cmd_run(&cmd)) return 1;
         cmd_append(&cmd, "make");
-        if (!cmd_run_sync_and_reset(&cmd)) return 1;
+        if (!cmd_run(&cmd)) return 1;
         set_current_dir("..");
         #endif
 
@@ -67,7 +67,8 @@ int main(int argc, char **argv)
     nob_cc_inputs(&cmd, "./ic.c");
     cmd_append(&cmd, "-L.");
     cmd_append(&cmd, "-ltcc");
-    if (!cmd_run_sync_and_reset(&cmd)) return 1;
+    cmd_append(&cmd, "-lm");
+    if (!cmd_run(&cmd)) return 1;
 
     return 0;
 }
