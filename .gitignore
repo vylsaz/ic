@@ -2,6 +2,7 @@ nob
 *.old
 *.exe
 *.dll
+*.def
 *.a
 *.o
 ic
