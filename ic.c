@@ -377,34 +377,37 @@ void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
                 "default:__printp)(X);"
         "} while (0)\n"
         "void __printi8(int8_t x) {"
-            "printf(\"%\"PRId8\" = 0x%02\"PRIX8\"\\n\",x,x);}\n"
+            "printf(\"(int8_t) %\"PRId8\" = 0x%02\"PRIX8\"\\n\",x,(uint8_t)x);}\n"
         "void __printi16(int16_t x) {"
-            "printf(\"%\"PRId16\" = 0x%04\"PRIX16\"\\n\",x,x);}\n"
+            "printf(\"(int16_t) %\"PRId16\" = 0x%04\"PRIX16\"\\n\",x,(uint16_t)x);}\n"
         "void __printi32(int32_t x) {"
-            "printf(\"%\"PRId32\" = 0x%08\"PRIX32,x,x);"
+            "printf(\"(int32_t) %\"PRId32\" = 0x%08\"PRIX32,x,x);"
             "if (x<=126 && x>=33) printf(\" = '%c'\",x); puts(\"\");}\n"
         "void __printi64(int64_t x) {"
-            "printf(\"%\"PRId64\" = 0x%016\"PRIX64\"\\n\",x,x);}\n"
+            "printf(\"(int64_t) %\"PRId64\" = 0x%016\"PRIX64\"\\n\",x,x);}\n"
         "void __printu8(uint8_t x) {"
-            "printf(\"%\"PRIu8\" = 0x%02\"PRIX8\"\\n\",x,x);}\n"
+            "printf(\"(uint8_t) %\"PRIu8\" = 0x%02\"PRIX8\"\\n\",x,x);}\n"
         "void __printu16(uint16_t x) {"
-            "printf(\"%\"PRIu16\" = 0x%04\"PRIX16\"\\n\",x,x);}\n"
+            "printf(\"(uint16_t) %\"PRIu16\" = 0x%04\"PRIX16\"\\n\",x,x);}\n"
         "void __printu32(uint32_t x) {"
-            "printf(\"%\"PRIu32\" = 0x%08\"PRIX32\"\\n\",x,x);}\n"
+            "printf(\"(uint32_t) %\"PRIu32\" = 0x%08\"PRIX32\"\\n\",x,x);}\n"
         "void __printu64(uint64_t x) {"
-            "printf(\"%\"PRIu64\" = 0x%016\"PRIX64\"\\n\",x,x);}\n"
+            "printf(\"(uint64_t) %\"PRIu64\" = 0x%016\"PRIX64\"\\n\",x,x);}\n"
     #ifdef _WIN32
-        "void __printil(long x) {printf(\"%ld = \",x);"
-            "if (4==sizeof(long)) printf(\"0x%08\"PRIX32\"\\n\",x);"
-            "else printf(\"0x%016\"PRIX64\"\\n\",x);}\n"
-        "void __printul(unsigned long x) {printf(\"%lu = \",x);"
-            "if (4==sizeof(long)) printf(\"0x%08\"PRIX32\"\\n\",x);"
-            "else printf(\"0x%016\"PRIX64\"\\n\",x);}\n"
+        "void __printil(long x) {printf(\"(long) %ld = \",x);"
+            "if (4==sizeof(long)) printf(\"0x%08lX\\n\",x);"
+            "else printf(\"0x%016lX\\n\",x);}\n"
+        "void __printul(unsigned long x) {printf(\"(unsigned long) %lu = \",x);"
+            "if (4==sizeof(long)) printf(\"0x%08lX\\n\",x);"
+            "else printf(\"0x%016lX\\n\",x);}\n"
     #endif
         "void __printf32(double x) {printf(\"%g\\n\",x);}\n"
         "void __printf64(float x) {printf(\"%g\\n\",x);}\n"
         "void __printb(_Bool x) {printf(\"%s\\n\",x?\"true\":\"false\");}\n"
-        "void __printc(char x) {printf(\"%c\\n\",x);}\n"
+        "void __printc(char x) {"
+            "if (x<=126 && x>=33) printf(\"'%c'\",x);"
+            "else printf(\"'\\\\x%02X'\",(int)(unsigned char)x);"
+            "puts(\"\");}\n"
         "void __prints(char *x) {printf(\"%s\\n\",x);}\n"
         "void __printcs(char const*x) {printf(\"%s\\n\",x);}\n"
         "void __printp(void *x) {printf(\""PTR_FMT"\\n\",x);}\n"
@@ -503,9 +506,9 @@ int Run(RunType rt,
         for (usz i = 0; i<opt->count; ++i) {
             nob_da_append(&cc, opt->items[i]);
         }
+        nob_cc_inputs(&cc, inpPath);
         nob_da_append(&cc, "-shared");
         nob_cc_output(&cc, outPath);
-        nob_cc_inputs(&cc, inpPath);
         nob_minimal_log_level = NOB_WARNING;
 
         if (!nob_cmd_run(&cc)) {
