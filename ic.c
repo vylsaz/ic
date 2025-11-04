@@ -1,5 +1,6 @@
 #include "libtcc/libtcc.h"
 #define NOB_IMPLEMENTATION
+#define NOB_NO_ECHO
 #include "nob.h"
 #include <assert.h>
 #include <inttypes.h>
@@ -15,40 +16,9 @@
 typedef uint64_t usz;
 typedef Nob_String_Builder StrBuilder;
 
-usz LastPathSep(char const *str, usz len)
-{
-    usz i;
-    for (i = 0; i<len; ++i) {
-        char c = str[len-i-1];
-        if (c=='\\' || c=='/') return len-i-1;
-    }
-    return -1;
-}
-
-char *GetExe(int *outlen)
-{
-    char *exe; int len;
-#ifdef _WIN32
-    assert(_get_pgmptr(&exe)==0);
-    len = strlen(exe);
-#elif defined(__linux__)
-    char buf[1+FILENAME_MAX] = {0};
-    len = readlink("/proc/self/exe", buf, sizeof buf);
-    assert(len!=-1);
-    exe = buf;
-#else
-#error TODO
-#endif
-    if (outlen!=NULL) *outlen = len;
-    return exe;
-}
-
 char *GetExePath(void)
 {
-    char *exe; int len, sep;
-    exe = GetExe(&len);
-    sep = LastPathSep(exe, len);
-    return nob_temp_sprintf("%.*s", sep, exe);
+    return nob_temp_dir_name(nob_temp_running_executable_path());
 }
 
 char LastChar(StrBuilder *sb)
@@ -355,13 +325,10 @@ void SpawnShell(char const *sh, usz len)
 {
     Nob_Cmd cmd = {0};
     size_t mark = nob_temp_save();
-    Nob_Log_Level old = nob_minimal_log_level;
-    nob_minimal_log_level = NOB_WARNING;
     ParseShell(sh, len, &cmd);
     nob_cmd_run(&cmd);
     nob_temp_rewind(mark);
     nob_da_free(cmd);
-    nob_minimal_log_level = old;
 }
 
 // temp
@@ -579,7 +546,7 @@ int Run(RunType rt,
 #endif
 
     // args to main
-    myArgs[0] = nob_temp_strdup(GetExe(NULL));
+    myArgs[0] = nob_temp_running_executable_path();
     for (i = 0; i<arg->count; ++i) {
         myArgs[1+i] = nob_temp_strdup(arg->items[i]);
     }
@@ -592,7 +559,6 @@ int Run(RunType rt,
     if (rt==RT_CC) {
         Nob_Cmd cc = {0};
         char *ccc;
-        Nob_Log_Level old = nob_minimal_log_level;
         char const *inpPath = nob_temp_sprintf("%s/temp/_ic.c", GetExePath());
         nob_write_entire_file(inpPath, sbSrc.items, sbSrc.count);
 
@@ -608,13 +574,8 @@ int Run(RunType rt,
         nob_cc_inputs(&cc, inpPath);
         nob_da_append(&cc, "-shared");
         nob_cc_output(&cc, outPath);
-        nob_minimal_log_level = NOB_WARNING;
 
-        if (!nob_cmd_run(&cc)) {
-            nob_minimal_log_level = old;
-            goto end;
-        }
-        nob_minimal_log_level = old;
+        if (!nob_cmd_run(&cc)) goto end;
     } else {
         // prepare quoted options
         sbOpt.count = 0;
