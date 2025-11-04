@@ -8,6 +8,10 @@
     #include <dlfcn.h>
 #endif
 
+#define CMD_SIGN ";"
+#define SHL_SIGN ">"
+#define CPP_SIGN "#"
+
 typedef uint64_t usz;
 typedef Nob_String_Builder StrBuilder;
 
@@ -83,7 +87,7 @@ enum CompleteResult IsComplete(StrBuilder *sb)
         Brack,
         Curly,
     };
-    enum Braces braceFromChar[] = {
+    static enum Braces braceFromChar[] = {
         ['('] = Paren,
         [')'] = Paren,
         ['['] = Brack,
@@ -91,11 +95,14 @@ enum CompleteResult IsComplete(StrBuilder *sb)
         ['{'] = Curly,
         ['}'] = Curly,
     };
-    
+
     enum CompleteResult r = Incomplete;
-    int sgStr = 0, dbStr = 0, lnCom = 0, blCom = 0, esc = 0;
-    usz len = 0, cap = 8;
-    enum Braces *stack = calloc(cap, sizeof(enum Braces));
+    bool sgStr = 0, dbStr = 0, lnCom = 0, blCom = 0, esc = 0;
+    struct BracesStack {
+        uint8_t *items;
+        usz count;
+        usz capacity;
+    } stack = {0};
 
     usz i;
     for (i = 0; i<sb->count-1; ++i) {
@@ -104,17 +111,15 @@ enum CompleteResult IsComplete(StrBuilder *sb)
             esc = 0;
             continue;
         }
-        if (sgStr) {
+        if (sgStr || dbStr) {
             if (esc==0 && c=='\\') {
                 esc = 1;
             }
-            if (c!='\'') continue;
-        }
-        if (dbStr) {
-            if (esc==0 && c=='\\') {
-                esc = 1;
+            if (c=='\n') {
+                r = Invalid;
+                goto defer;
             }
-            if (c!='\"') continue;
+            if (c!=(sgStr?'\'':'\"')) continue;
         }
         if (lnCom) {
             if (c=='\n') lnCom = 0;
@@ -128,19 +133,13 @@ enum CompleteResult IsComplete(StrBuilder *sb)
         }
         if (c=='(' || c=='[' || c=='{') {
             enum Braces lef = braceFromChar[(int)c];
-            if (len+1 > cap) {
-                cap *= 2;
-                stack = realloc(stack, cap*sizeof(enum Braces));
-                assert(stack);
-            }
-            stack[len] = lef;
-            len += 1;
+            nob_da_append(&stack, lef);
         } else if (c==')' || c==']' || c=='}') {
             enum Braces rig = braceFromChar[(int)c];
             enum Braces lef = NoBrace;
-            if (len > 0) {
-                len -= 1;
-                lef = stack[len];
+            if (stack.count > 0) {
+                stack.count -= 1;
+                lef = stack.items[stack.count];
             }
             if (rig!=lef) {
                 r = Invalid;
@@ -162,18 +161,55 @@ enum CompleteResult IsComplete(StrBuilder *sb)
             }
         }
     }
-    if (sgStr || dbStr || lnCom || blCom) {
+    if (dbStr || lnCom || blCom) {
         r = Incomplete;
-    } else if (len!=0) {
+    } else if (stack.count > 0) {
         r = Incomplete;
-    } else if (nob_da_last(sb)=='\\') {
+    } else if (sb->items[sb->count-2]=='\\') {
         r = Incomplete;
     } else {
         r = Complete;
     }
 defer:
-    free(stack);
+    nob_da_free(stack);
     return r;
+}
+
+enum CompleteResult IsCppComplete(StrBuilder *sb) {
+    int64_t stack = 0;
+
+    usz i;
+    for (i = 0; i<sb->count; ++i) {
+        Nob_String_View sv;
+        bool cont = 0;
+        usz j;
+        for (j = 0; i+j<sb->count; ++j) {
+            char c = sb->items[i+j];
+            if (cont) {
+                cont = 0;
+                continue;
+            }
+            if (cont==0 && c=='\\') {
+                cont = 1;
+            }
+            if (c=='\n') break;
+        }
+        sv = nob_sv_from_parts(&sb->items[i], j);
+        sv = nob_sv_trim(sv);
+        if (nob_sv_starts_with(sv, nob_sv_from_cstr("#if"))) {
+            stack += 1;
+        } else if (nob_sv_starts_with(sv, nob_sv_from_cstr("#endif"))) {
+            stack -= 1;
+        }
+        i += j;
+    }
+    if (stack<0) {
+        return Invalid;
+    } else if (stack>0) {
+        return Incomplete;
+    } else {
+        return Complete;
+    }
 }
 
 int GetLine(StrBuilder *out)
@@ -188,33 +224,67 @@ int GetLine(StrBuilder *out)
     return 1;
 }
 
+bool TrimPrefix(StrBuilder *out, char const *cstr)
+{
+    Nob_String_View sv = nob_sv_from_parts(out->items, out->count);
+    sv = nob_sv_trim(sv);
+    return nob_sv_starts_with(sv, nob_sv_from_cstr(cstr));
+}
+
+bool IsEmpty(StrBuilder *out)
+{
+    usz i;
+    for (i = 0; i<out->count; ++i) {
+        if (!isspace(out->items[i])) return false;
+    }
+    return true;
+}
+
 enum InputKind {
     Empty,
     Expr,
     Stmt,
     Cmd,
-    Cpp,
     Pre,
     Shell,
 };
-enum InputKind GetInput(StrBuilder *out, usz *outLine)
+enum InputKind GetInput(StrBuilder *out, usz *outLine, bool is_top)
 {
-    usz i, line = *outLine;
+    enum InputKind r = Empty;
+    usz line = *outLine;
+    char prompt = is_top? ']': ')';
     char c;
 
     out->count = 0;
-    for (i = 0;; ++i) {
-        printf("%2zu) ", 1+line);
+    for (;;) {
+        printf("%2zu%c ", 1+line, prompt);
         if (GetLine(out)==0) break;
+        if (out->items[out->count-2]=='\\') {
+            if (out->items[0]==SHL_SIGN[0]) {
+                out->count -= 2;
+                prompt = '>';
+            }
+            continue;
+        }
         line += 1;
-        if (IsComplete(out)) break;
+        if (out->items[0]==CMD_SIGN[0]) {
+            r = Cmd;
+            break;
+        }
+        if (out->items[0]==SHL_SIGN[0]) {
+            r = Shell;
+            break;
+        }
+        if (TrimPrefix(out, CPP_SIGN)) {
+            if (IsCppComplete(out)) {
+                r = Pre;
+                break;
+            }
+        } else if (IsComplete(out)) break;
     }
     *outLine = line;
-    if (out->count==1) return Empty;
-    if (out->items[0]==';') return Cmd;
-    if (out->items[0]=='#') return Cpp;
-    if (out->items[0]==':') return Pre;
-    if (out->items[0]=='>') return Shell;
+    if (r!=Empty) return r;
+    if (IsEmpty(out)) return Empty;
     c = LastChar(out);
     if (c=='}' || c==';') return Stmt;
     return Expr;
@@ -285,10 +355,13 @@ void SpawnShell(char const *sh, usz len)
 {
     Nob_Cmd cmd = {0};
     size_t mark = nob_temp_save();
+    Nob_Log_Level old = nob_minimal_log_level;
+    nob_minimal_log_level = NOB_WARNING;
     ParseShell(sh, len, &cmd);
     nob_cmd_run(&cmd);
     nob_temp_rewind(mark);
     nob_da_free(cmd);
+    nob_minimal_log_level = old;
 }
 
 // temp
@@ -354,6 +427,7 @@ void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         "#include <stdbool.h>\n"
         "#include <math.h>\n"
         "#include <inttypes.h>\n"
+        "#include <wchar.h>\n"
     ;
     
     static char prolog[] = 
@@ -361,6 +435,8 @@ void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         BIN_FUNCTION(8) BIN_FUNCTION(16) BIN_FUNCTION(32) BIN_FUNCTION(64)
         "#define BIN(X) _Generic((X),"
             GEN_BIN(8) GEN_BIN(16) GEN_BIN(32) GEN_BIN(64) "default:__bin64)(X)\n"
+        "#define ONCE_LINE (__LINE__>LASTLINE)\n"
+        "#define ONCE if (__LINE__>LASTLINE)\n"
         "#define PRINT(X) "
         "do {"
             "if (__LINE__>LASTLINE) _Generic((X),"
@@ -374,6 +450,7 @@ void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
                 "float:__printf32,double:__printf64,"
                 "bool:__printb,char:__printc,"
                 "char*:__prints,char const*:__printcs,"
+                "wchar_t*:__printws,wchar_t const*:__printwcs,"
                 "default:__printp)(X);"
         "} while (0)\n"
         "void __printi8(int8_t x) {"
@@ -382,7 +459,17 @@ void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
             "printf(\"(int16_t) %\"PRId16\" = 0x%04\"PRIX16\"\\n\",x,(uint16_t)x);}\n"
         "void __printi32(int32_t x) {"
             "printf(\"(int32_t) %\"PRId32\" = 0x%08\"PRIX32,x,x);"
-            "if (x<=126 && x>=33) printf(\" = '%c'\",x); puts(\"\");}\n"
+            "switch(x) {"
+            "case 34:case 39:case 92: printf(\" = '\\\\%c'\",x); break;"
+            "case '\\a': printf(\" = '\\\\a'\"); break;"
+            "case '\\b': printf(\" = '\\\\b'\"); break;"
+            "case '\\f': printf(\" = '\\\\n'\"); break;"
+            "case '\\n': printf(\" = '\\\\n'\"); break;"
+            "case '\\r': printf(\" = '\\\\r'\"); break;"
+            "case '\\t': printf(\" = '\\\\t'\"); break;"
+            "case '\\v': printf(\" = '\\\\v'\"); break;"
+            "default: if (x<=126 && x>=33) printf(\" = '%c'\",x);}"
+            "puts(\"\");}\n"
         "void __printi64(int64_t x) {"
             "printf(\"(int64_t) %\"PRId64\" = 0x%016\"PRIX64\"\\n\",x,x);}\n"
         "void __printu8(uint8_t x) {"
@@ -401,15 +488,27 @@ void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
             "if (4==sizeof(long)) printf(\"0x%08lX\\n\",x);"
             "else printf(\"0x%016lX\\n\",x);}\n"
     #endif
-        "void __printf32(double x) {printf(\"%g\\n\",x);}\n"
-        "void __printf64(float x) {printf(\"%g\\n\",x);}\n"
+        "void __printf32(double x) {printf(\"(float) %g\\n\",x);}\n"
+        "void __printf64(float x) {printf(\"(double) %g\\n\",x);}\n"
         "void __printb(_Bool x) {printf(\"%s\\n\",x?\"true\":\"false\");}\n"
         "void __printc(char x) {"
-            "if (x<=126 && x>=33) printf(\"'%c'\",x);"
-            "else printf(\"'\\\\x%02X'\",(int)(unsigned char)x);"
+            "switch (x) {"
+            "case 34:case 39:case 92: printf(\"'\\\\%c'\",x); break;"
+            "case '\\a': printf(\"'\\\\a'\"); break;"
+            "case '\\b': printf(\"'\\\\b'\"); break;"
+            "case '\\f': printf(\"'\\\\n'\"); break;"
+            "case '\\n': printf(\"'\\\\n'\"); break;"
+            "case '\\r': printf(\"'\\\\r'\"); break;"
+            "case '\\t': printf(\"'\\\\t'\"); break;"
+            "case '\\v': printf(\"'\\\\v'\"); break;"
+            "default:"
+                "if (x<=126 && x>=33) printf(\"'%c'\",x);"
+                "else printf(\"'\\\\x%02X'\",(int)(unsigned char)x);}"
             "puts(\"\");}\n"
         "void __prints(char *x) {printf(\"%s\\n\",x);}\n"
         "void __printcs(char const*x) {printf(\"%s\\n\",x);}\n"
+        "void __printws(wchar_t *x) {printf(\"%ls\\n\",x);}\n"
+        "void __printwcs(wchar_t const*x) {printf(\"%ls\\n\",x);}\n"
         "void __printp(void *x) {printf(\""PTR_FMT"\\n\",x);}\n"
         "void __printmem(void *x, size_t sz) {"
             "size_t i, j, k; uint8_t *a = x;"
@@ -595,6 +694,7 @@ int main(int argc, char **argv)
     char const *incPath = nob_temp_sprintf("%s/include", tccPath);
     char const *libPath = nob_temp_sprintf("%s/lib", tccPath);
     RunType rt = RT_MEM;
+    bool is_top = false;
 
     for (int i = 1; i<argc; ++i) {
         char *a = argv[i];
@@ -618,10 +718,10 @@ int main(int argc, char **argv)
         else nob_da_append(&opt, a);
     }
 
-    puts("Type \";h\" for help");
+    puts("Type \""CMD_SIGN"h\" for help");
     for (;;) {
         usz outLine = line;
-        enum InputKind kind = GetInput(&out, &outLine);
+        enum InputKind kind = GetInput(&out, &outLine, is_top);
         if (kind==Empty) {
             continue;
         } else if (kind==Shell) {
@@ -632,25 +732,27 @@ int main(int argc, char **argv)
                 printf("Unknown command \"%.*s\"\n", (int)out.count-1, out.items);
             break; case 'h':
                 printf("%s",
-                    ";h -- show this help message\n"
-                    ";q -- quit\n"
-                    ";l -- list recorded code\n"
-                    ";c -- clear recorded code\n"
-                    ";o      -- list current compiler options\n"
-                    ";o[...] -- append new compiler options\n"
-                    ";O      -- clear compiler options\n"
-                    ";a      -- list current arguments\n"
-                    ";a[...] -- append new arguments\n"
-                    ";A      -- clear arguments\n"
-                    ";p expr -- print a struct or array\n"
-                    ";P x,sz -- print memory x with size sz\n"
-                    "#[...]  -- C preprocessor\n"
-                    ":[...]  -- Statements outside of main\n"
-                    ">[...]  -- Execute shell command\n"
+                    CMD_SIGN"h      -- show this help message\n"
+                    CMD_SIGN"q      -- quit\n"
+                    CMD_SIGN"l      -- list recorded code\n"
+                    CMD_SIGN"c      -- clear recorded code\n"
+                    CMD_SIGN"o      -- list current compiler options\n"
+                    CMD_SIGN"o[...] -- append new compiler options\n"
+                    CMD_SIGN"O      -- clear compiler options\n"
+                    CMD_SIGN"a      -- list current arguments\n"
+                    CMD_SIGN"a[...] -- append new arguments\n"
+                    CMD_SIGN"A      -- clear arguments\n"
+                    CMD_SIGN"p expr -- print a struct or array\n"
+                    CMD_SIGN"P x,sz -- print memory x with size sz\n"
+                    CMD_SIGN"t      -- start a top level statement\n"
+                    CMD_SIGN"T      -- return to main\n"
+                    CPP_SIGN"[...]  -- C preprocessor\n"
+                    SHL_SIGN"[...]  -- execute shell command\n"
                 );
             break; case 'q':
                 goto endloop;
-            break; case 'l':
+                break; case 'l':
+                printf("/* top */\n");
                 printf("%.*s", (int)pre.count, pre.items);
                 printf("/* main */\n");
                 printf("%.*s", (int)src.count, src.items);
@@ -704,8 +806,23 @@ int main(int argc, char **argv)
                     nob_sb_append_cstr(&last, ");\n");
                     goto run_label;
                 }
+            break; case 't':
+                is_top = true;
+            break; case 'T':
+                is_top = false;
             }
         } else {
+            if (is_top) {
+                if (kind==Stmt) {
+                    kind = Pre;
+                    is_top = false;
+                } else if (kind==Expr) {
+                    is_top = false;
+                    printf("Cannot evaluate expression at top level\n");
+                    continue;
+                }
+            }
+
             last.count = 0;
             if (kind==Stmt) {
                 AppendLineNum(&last, 1+line);
@@ -720,9 +837,6 @@ int main(int argc, char **argv)
             first.count = 0;
             if (kind==Pre) {
                 AppendLineNum(&first, 1+line);
-                nob_sb_append_buf(&first, out.items+1, out.count-1);
-            } else if (kind==Cpp) {
-                AppendLineNum(&first, 1+line);
                 nob_sb_append_buf(&first, out.items, out.count);
             }
         run_label:
@@ -735,7 +849,7 @@ int main(int argc, char **argv)
                 if (kind==Stmt) {
                     line = outLine;
                     nob_sb_append_buf(&src, last.items, last.count);
-                } else if (kind==Pre || kind==Cpp) {
+                } else if (kind==Pre) {
                     line = outLine;
                     nob_sb_append_buf(&pre, first.items, first.count);
                 }
