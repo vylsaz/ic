@@ -145,6 +145,15 @@ defer:
     return r;
 }
 
+bool IsCppOf(Nob_String_View sv, char const *cstr)
+{
+    sv = nob_sv_trim_left(sv);
+    if (!nob_sv_starts_with(sv, nob_sv_from_cstr("#"))) return false;
+    sv = nob_sv_from_parts(sv.data + 1, sv.count - 1);
+    sv = nob_sv_trim_left(sv);
+    return nob_sv_starts_with(sv, nob_sv_from_cstr(cstr));
+}
+
 enum CompleteResult IsCppComplete(StrBuilder *sb) {
     int64_t stack = 0;
 
@@ -165,10 +174,9 @@ enum CompleteResult IsCppComplete(StrBuilder *sb) {
             if (c=='\n') break;
         }
         sv = nob_sv_from_parts(&sb->items[i], j);
-        sv = nob_sv_trim(sv);
-        if (nob_sv_starts_with(sv, nob_sv_from_cstr("#if"))) {
+        if (IsCppOf(sv, "if")) {
             stack += 1;
-        } else if (nob_sv_starts_with(sv, nob_sv_from_cstr("#endif"))) {
+        } else if (IsCppOf(sv, "endif")) {
             stack -= 1;
         }
         i += j;
@@ -197,7 +205,7 @@ int GetLine(StrBuilder *out)
 bool TrimPrefix(StrBuilder *out, char const *cstr)
 {
     Nob_String_View sv = nob_sv_from_parts(out->items, out->count);
-    sv = nob_sv_trim(sv);
+    sv = nob_sv_trim_left(sv);
     return nob_sv_starts_with(sv, nob_sv_from_cstr(cstr));
 }
 
