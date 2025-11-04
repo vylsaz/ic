@@ -572,10 +572,10 @@ int Run(RunType rt,
     char **myArgs = nob_temp_alloc((myArgsLen)*sizeof(char *));
 #ifdef _WIN32
     HMODULE h = NULL;
-    char const *outPath = nob_temp_sprintf("%s/ic.dll", GetExePath());
+    char const *outPath = nob_temp_sprintf("%s/temp/ic.dll", GetExePath());
 #else
     void *h = NULL;
-    char const *outPath = nob_temp_sprintf("%s/ic.so", GetExePath());
+    char const *outPath = nob_temp_sprintf("%s/temp/ic.so", GetExePath());
 #endif
 
     // args to main
@@ -593,7 +593,7 @@ int Run(RunType rt,
         Nob_Cmd cc = {0};
         char *ccc;
         Nob_Log_Level old = nob_minimal_log_level;
-        char const *inpPath = nob_temp_sprintf("%s/_ic.c", GetExePath());
+        char const *inpPath = nob_temp_sprintf("%s/temp/_ic.c", GetExePath());
         nob_write_entire_file(inpPath, sbSrc.items, sbSrc.count);
 
         ccc = GetCC();
@@ -611,11 +611,9 @@ int Run(RunType rt,
         nob_minimal_log_level = NOB_WARNING;
 
         if (!nob_cmd_run(&cc)) {
-            nob_delete_file(inpPath);
             nob_minimal_log_level = old;
             goto end;
         }
-        nob_delete_file(inpPath);
         nob_minimal_log_level = old;
     } else {
         // prepare quoted options
