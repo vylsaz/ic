@@ -3,11 +3,15 @@
 #include "nob.h"
 
 #ifdef _WIN32
-#define TCC_DIR "./tinycc/win32"
-#define TCC_LIB "./libtcc.dll"
+#   define TCC_DIR "./tinycc/win32"
+#   define TCC_LIB "./libtcc.dll"
 #else
-#define TCC_DIR "./tinycc"
-#define TCC_LIB "./libtcc.a"
+#   define TCC_DIR "./tinycc"
+#   ifdef __ANDROID__
+#       define TCC_LIB "./libtcc.so"
+#   else
+#       define TCC_LIB "./libtcc.a"
+#   endif
 #endif
 
 
@@ -68,6 +72,9 @@ int main(int argc, char **argv)
     cmd_append(&cmd, "-L.");
     cmd_append(&cmd, "-ltcc");
     cmd_append(&cmd, "-lm");
+#ifdef __ANDROID__
+    cmd_append(&cmd, temp_sprintf("-Wl,-R%s", get_current_dir_temp()));
+#endif
     if (!cmd_run(&cmd)) return 1;
 
     if (!mkdir_if_not_exists("./temp")) return 1;

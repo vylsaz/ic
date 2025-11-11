@@ -631,6 +631,9 @@ int Run(RunType rt,
         tcc_set_lib_path(s, tccPath);
         tcc_add_sysinclude_path(s, incPath);
         tcc_add_library_path(s, libPath);
+    #ifdef __ANDROID__
+        tcc_add_library_path(s, GetExePath());
+    #endif
         r = tcc_compile_string(s, sbSrc.items);
         if (r==-1) goto end;
     }
