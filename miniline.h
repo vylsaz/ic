@@ -240,6 +240,7 @@ int mlReadUtf32(void)
     } else {
         assert(0 && "invalid utf8");
     }
+    return cp;
 }
 #endif
 
