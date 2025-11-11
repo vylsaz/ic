@@ -1,3 +1,6 @@
+#define MINILINE_IMPLEMENTATION
+#include "miniline.h"
+
 #include "libtcc/libtcc.h"
 #define NOB_IMPLEMENTATION
 #define NOB_NO_ECHO
@@ -190,16 +193,25 @@ enum CompleteResult IsCppComplete(StrBuilder *sb) {
     }
 }
 
-int GetLine(StrBuilder *out)
+int SbReadLine(StrBuilder *out, char const *prompt)
 {
+#if 0
     char inp[256] = {0};
     usz const inpLen = sizeof(inp)-1;
-
+    printf("%s", prompt);
     do {
         if (fgets(inp, inpLen, stdin)==NULL) return 0;
         nob_sb_append_cstr(out, inp);
     } while (nob_da_last(out)!='\n');
     return 1;
+#else
+    char *inp = mlReadLine(prompt);
+    if (inp==NULL) return 0;
+    nob_sb_append_cstr(out, inp);
+    nob_da_append(out, '\n');
+    free(inp);
+    return 1;
+#endif
 }
 
 bool TrimPrefix(StrBuilder *out, char const *cstr)
@@ -225,22 +237,29 @@ enum InputKind {
     Cmd,
     Pre,
     Shell,
+    InputEnd,
 };
-enum InputKind GetInput(StrBuilder *out, usz *outLine, bool is_top)
+enum InputKind GetInput(StrBuilder *out, usz *outLine, bool isTop)
 {
     enum InputKind r = Empty;
+    size_t mark = nob_temp_save();
+    char *prompt;
+    
     usz line = *outLine;
-    char prompt = is_top? ']': ')';
+    char promptChar = isTop? ']': ')';
     char c;
 
     out->count = 0;
     for (;;) {
-        printf("%2zu%c ", 1+line, prompt);
-        if (GetLine(out)==0) break;
+        prompt = nob_temp_sprintf("%2zu%c ", 1+line, promptChar);
+        if (SbReadLine(out, prompt)==0) {
+            r = InputEnd;
+            break;
+        }
         if (out->items[out->count-2]=='\\') {
             if (out->items[0]==SHL_SIGN[0]) {
                 out->count -= 2;
-                prompt = '>';
+                promptChar = '>';
             }
             continue;
         }
@@ -260,6 +279,7 @@ enum InputKind GetInput(StrBuilder *out, usz *outLine, bool is_top)
             }
         } else if (IsComplete(out)) break;
     }
+    nob_temp_rewind(mark);
     *outLine = line;
     if (r!=Empty) return r;
     if (IsEmpty(out)) return Empty;
@@ -403,6 +423,13 @@ void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         "#include <math.h>\n"
         "#include <inttypes.h>\n"
         "#include <wchar.h>\n"
+    #if defined(_WIN32)
+        "#ifdef __TINYC__\n"
+        "#define _ftelli64(stream) (_telli64(_fileno(stream)))\n"
+        "#endif\n"
+    #endif
+        "#define NOB_REBUILD_URSELF\n"
+        "#define NOB_IMPLEMENTATION\n"
     ;
     
     static char prolog[] = 
@@ -535,7 +562,8 @@ int Run(RunType rt,
     char const *tccPath, char const *incPath, char const *libPath, usz line,
     Nob_Cmd *opt, Nob_Cmd *arg, 
     StrBuilder *pre, StrBuilder *first,
-    StrBuilder *src, StrBuilder *last)
+    StrBuilder *src, StrBuilder *last,
+    bool werror)
 {
     typedef int (*IcMain)(int, char **);
     IcMain ic_main;
@@ -576,6 +604,9 @@ int Run(RunType rt,
         } else {
             nob_cmd_append(&cc, ccc);
         }
+        if (werror) {
+            nob_da_append(&cc, "-Werror");
+        }
         for (usz i = 0; i<opt->count; ++i) {
             nob_da_append(&cc, opt->items[i]);
         }
@@ -587,6 +618,9 @@ int Run(RunType rt,
     } else {
         // prepare quoted options
         sbOpt.count = 0;
+        if (werror) {
+            nob_sb_append_cstr(&sbOpt, "-Werror ");
+        }
         SimpleQuote(opt->items, opt->count, &sbOpt);
         nob_sb_append_null(&sbOpt);
         
@@ -661,7 +695,7 @@ int main(int argc, char **argv)
     char const *incPath = nob_temp_sprintf("%s/include", tccPath);
     char const *libPath = nob_temp_sprintf("%s/lib", tccPath);
     RunType rt = RT_MEM;
-    bool is_top = false;
+    bool isTop = false, werror = true;
 
     for (int i = 1; i<argc; ++i) {
         char *a = argv[i];
@@ -688,9 +722,11 @@ int main(int argc, char **argv)
     puts("Type \""CMD_SIGN"h\" for help");
     for (;;) {
         usz outLine = line;
-        enum InputKind kind = GetInput(&out, &outLine, is_top);
+        enum InputKind kind = GetInput(&out, &outLine, isTop);
         if (kind==Empty) {
             continue;
+        } else if (kind==InputEnd) {
+            break;
         } else if (kind==Shell) {
             SpawnShell(out.items+1, out.count-1);
         } else if (kind==Cmd) {
@@ -713,6 +749,8 @@ int main(int argc, char **argv)
                     CMD_SIGN"P x,sz -- print memory x with size sz\n"
                     CMD_SIGN"t      -- start a top level statement\n"
                     CMD_SIGN"T      -- return to main\n"
+                    CMD_SIGN"w      -- warnings as errors (default)\n"
+                    CMD_SIGN"W      -- warnings not as errors\n"
                     CPP_SIGN"[...]  -- C preprocessor\n"
                     SHL_SIGN"[...]  -- execute shell command\n"
                 );
@@ -774,17 +812,23 @@ int main(int argc, char **argv)
                     goto run_label;
                 }
             break; case 't':
-                is_top = true;
+                isTop = true;
             break; case 'T':
-                is_top = false;
+                isTop = false;
+            break; case 'w':
+                werror = true;
+                printf("warnings as error: on\n");
+            break; case 'W':
+                werror = false;
+                printf("warnings as error: off\n");
             }
         } else {
-            if (is_top) {
+            if (isTop) {
                 if (kind==Stmt) {
                     kind = Pre;
-                    is_top = false;
+                    isTop = false;
                 } else if (kind==Expr) {
-                    is_top = false;
+                    isTop = false;
                     printf("Cannot evaluate expression at top level\n");
                     continue;
                 }
@@ -811,7 +855,9 @@ int main(int argc, char **argv)
                 tccPath, incPath, libPath, line,
                 &opt, &arg,
                 &pre, &first,
-                &src, &last) >= 0;
+                &src, &last,
+                werror
+            ) >= 0;
             if (ok) {
                 if (kind==Stmt) {
                     line = outLine;
