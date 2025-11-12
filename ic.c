@@ -627,8 +627,8 @@ int Run(RunType rt,
         tcc_set_lib_path(s, tccPath);
         tcc_add_sysinclude_path(s, incPath);
         tcc_add_library_path(s, libPath);
-    #ifdef __ANDROID__
-        tcc_add_library_path(s, GetExePath());
+    #ifndef _WIN32
+        tcc_add_library_path(s, tccPath);
     #endif
         r = tcc_compile_string(s, sbSrc.items);
         if (r==-1) goto end;
@@ -816,10 +816,10 @@ int main(int argc, char **argv)
                 isTop = false;
             break; case 'w':
                 werror = true;
-                printf("warnings as error: on\n");
+                printf("warnings as errors: on\n");
             break; case 'W':
                 werror = false;
-                printf("warnings as error: off\n");
+                printf("warnings as errors: off\n");
             }
         } else {
             if (isTop) {
