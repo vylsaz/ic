@@ -85,13 +85,7 @@ enum CompleteResult IsComplete(StrBuilder *sb)
             continue;
         }
         if (sgStr || dbStr) {
-            if (esc==0 && c=='\\') {
-                esc = 1;
-            }
-            if (c=='\n') {
-                r = Invalid;
-                goto defer;
-            }
+            if (esc==0 && c=='\\') esc = 1;
             if (c!=(sgStr?'\'':'\"')) continue;
         }
         if (lnCom) {
@@ -134,8 +128,10 @@ enum CompleteResult IsComplete(StrBuilder *sb)
             }
         }
     }
-    if (dbStr || lnCom || blCom) {
+    if (lnCom || blCom) {
         r = Incomplete;
+    } else if (dbStr || sgStr) {
+        r = Invalid;
     } else if (stack.count > 0) {
         r = Incomplete;
     } else if (sb->items[sb->count-2]=='\\') {
