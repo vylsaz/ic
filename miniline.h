@@ -7,6 +7,9 @@
 
 MINILINE_API char *mlReadLine(const char *prompt);
 
+// flags:
+// #define MINILINE_IGNORE_ZWJ
+
 #endif // MINILINE_H_
 
 #ifdef MINILINE_IMPLEMENTATION
@@ -143,9 +146,6 @@ static void mlEnableRawMode(void)
     GetConsoleMode(st->inp, &dwMode);
     dwMode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
     SetConsoleMode(st->inp, dwMode);
-    GetConsoleMode(st->out, &dwMode);
-    dwMode &= ~(ENABLE_WRAP_AT_EOL_OUTPUT);
-    SetConsoleMode(st->out, dwMode);
 #else
     // https://github.com/antirez/linenoise/blob/880b94130ffa5f8236392392b447ff2234b11983/linenoise.c#L220
     struct termios term;
@@ -553,17 +553,30 @@ static void mlRefreshLine(mlEditBuf *eb)
             // go to next line (wide)
             accum = w;
             rows += 1;
-            mlObSimpStr(&ob, "\r\n");
         }
-        mlObCodePoint(&ob, cp);
+    #ifdef MINILINE_IGNORE_ZWJ
+        if (cp != 0x200D)
+    #endif
+        // assume the terminal has the same width and new line 
+        // behavior as we do...
+        // (when it fails, it fails horribly)
+        mlObCodePoint(&ob, cp); 
         if (accum == cols) {
             // go to next line (exact)
             accum = 0;
             rows += 1;
-            mlObSimpStr(&ob, "\r\n");
         }
     }
-    if (eb->pos == eb->len) {
+    int posAtEnd = (eb->pos == eb->len);
+    if (accum == 0 && rows > 0) {
+        if (posAtEnd) {
+            // at the start of a new line
+            mlObSimpStr(&ob, "\r\n");
+        } else {
+            rows -= 1;
+        }
+    }
+    if (posAtEnd) {
         curX = accum;
         curY = rows;
     }

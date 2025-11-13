@@ -1,4 +1,5 @@
 #define MINILINE_IMPLEMENTATION
+#define MINILINE_IGNORE_ZWJ
 #include "miniline.h"
 
 #include "libtcc/libtcc.h"
