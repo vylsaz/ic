@@ -5,6 +5,7 @@
 #include "libtcc/libtcc.h"
 #define NOB_IMPLEMENTATION
 #define NOB_NO_ECHO
+#define NOB_DA_INIT_CAP 16
 #include "nob.h"
 #include <assert.h>
 #include <inttypes.h>
@@ -236,19 +237,23 @@ enum InputKind {
     Shell,
     InputEnd,
 };
-enum InputKind GetInput(StrBuilder *out, usz *outLine, bool isTop)
+enum InputKind GetInput(StrBuilder *out, usz *outLine, bool isTop, bool isTimed)
 {
     enum InputKind r = Empty;
     size_t mark = nob_temp_save();
     char *prompt;
     
+    bool isCmd = false;
     usz line = *outLine;
-    char promptChar = isTop? ']': ')';
     char c;
 
     out->count = 0;
     for (;;) {
-        prompt = nob_temp_sprintf("%2zu%c ", 1+line, promptChar);
+        if (isCmd) {
+            prompt = SHL_SIGN" ";
+        } else {
+            prompt = nob_temp_sprintf("%s%2zu%c ", isTimed? "t:": "", 1+line, isTop? ']': ')');
+        }
         if (SbReadLine(out, prompt)==0) {
             r = InputEnd;
             break;
@@ -256,7 +261,7 @@ enum InputKind GetInput(StrBuilder *out, usz *outLine, bool isTop)
         if (out->items[out->count-2]=='\\') {
             if (out->items[0]==SHL_SIGN[0]) {
                 out->count -= 2;
-                promptChar = '>';
+                isCmd = true;
             }
             continue;
         }
@@ -346,12 +351,143 @@ void ParseShell(char const *sh, usz len, Nob_Cmd *cmd)
     nob_sb_free(sb);
 }
 
+void Pwd(void)
+{
+    char const *cwd = nob_get_current_dir_temp();
+    printf("Current directory: %s\n", cwd);
+}
+
+void Cd(Nob_Cmd *cmd)
+{                   
+    if (cmd->count>2) {
+        nob_log(NOB_ERROR, "cd: too many arguments");
+        return;
+    }
+    if (cmd->count==2) {
+        char const *dir = cmd->items[1];
+        nob_set_current_dir(dir);
+    }
+    Pwd();
+}
+
+// let leak
+struct {
+    char **items;
+    uint64_t count;
+    uint64_t capacity;
+} DirStack = {0};
+
+void Dirs(void)
+{
+    Pwd();
+    for (uint64_t i = DirStack.count; i>0; --i) {
+        printf("%s\n", DirStack.items[i-1]);
+    }
+}
+
+void Pushd(Nob_Cmd *cmd)
+{
+    if (cmd->count>2) {
+        nob_log(NOB_ERROR, "pushd: too many arguments");
+        return;
+    }
+
+    char *cwd = strdup(nob_get_current_dir_temp());
+    if (cmd->count==1) {
+        if (DirStack.count==0) {
+            nob_log(NOB_ERROR, "pushd: no other directory");
+            return;
+        }
+        char *dir = nob_da_last(&DirStack);
+        nob_set_current_dir(dir);
+        nob_da_last(&DirStack) = cwd;
+        free(dir);
+    } else {
+        nob_da_append(&DirStack, cwd);
+        char const *dir = cmd->items[1];
+        nob_set_current_dir(dir);
+    }
+    Dirs();
+}
+
+void Popd(void)
+{
+    if (DirStack.count==0) {
+        nob_log(NOB_ERROR, "popd: directory stack empty");
+        return;
+    }
+    char *dir = nob_da_last(&DirStack);
+    DirStack.count -= 1;
+    nob_set_current_dir(dir);
+    free(dir);
+    Dirs();
+}
+
+void Ls(Nob_Cmd *cmd)
+{
+    if (cmd->count>2) {
+        nob_log(NOB_ERROR, "ls: too many arguments");
+        return;
+    }
+    Nob_File_Paths entries = {0};
+    char const *cwd; 
+    if (cmd->count==2) {
+        cwd = cmd->items[1];
+    } else {
+        cwd = nob_get_current_dir_temp();
+    }
+    if (!nob_read_entire_dir(cwd, &entries)) {
+        nob_log(NOB_ERROR, "ls: could not read directory %s", cwd);
+        return;
+    }
+    for (usz i = 0; i<entries.count; ++i) {
+        printf("%s\n", entries.items[i]);
+    }
+    nob_da_free(entries);
+}
+
+void ShellHelp(void)
+{
+    printf("%s",
+        "Built-in shell commands:\n"
+        "  pwd          Print current directory\n"
+        "  cd [dir]     Change current directory to 'dir'\n"
+        "               or print current directory\n"
+        "  dirs         Print directory stack\n"
+        "  pushd [dir]  Push current directory to stack and change to 'dir'\n"
+        "               or swap current directory with top of stack\n"
+        "  popd         Pop directory from stack and change to it\n"
+        "  ls [dir]     (Windows only) List contents of 'dir'\n"
+        "               or current directory\n"
+        "Others:        Call the executable with arguments\n"
+        "               e.g. > vim file.c\n"
+    );
+}
+
 void SpawnShell(char const *sh, usz len)
 {
     Nob_Cmd cmd = {0};
     size_t mark = nob_temp_save();
     ParseShell(sh, len, &cmd);
-    nob_cmd_run(&cmd);
+    if (strcmp(cmd.items[0], "")==0) {
+        ShellHelp();
+    } else if (strcmp(cmd.items[0], "cd")==0) {
+        Cd(&cmd);
+    } else if (strcmp(cmd.items[0], "pwd")==0) {
+        Pwd();
+    } else if (strcmp(cmd.items[0], "dirs")==0) {
+        Dirs();
+    } else if (strcmp(cmd.items[0], "pushd")==0) {
+        Pushd(&cmd);
+    } else if (strcmp(cmd.items[0], "popd")==0) {
+        Popd();
+#ifdef _WIN32
+    } else if (strcmp(cmd.items[0], "ls")==0) {
+        Ls(&cmd);
+#endif
+    } else {
+        nob_cmd_run(&cmd);
+    }
     nob_temp_rewind(mark);
     nob_da_free(cmd);
 }
@@ -684,18 +820,97 @@ void AppendLineNum(StrBuilder *sb, usz line)
     nob_temp_rewind(mark);
 }
 
+void AppendTiming(StrBuilder *first, StrBuilder *last, usz line, bool once, StrBuilder *reps, StrBuilder *out)
+{
+    first->count = 0;
+    last->count = 0;
+    AppendLineNum(last, 1+line);
+#ifdef _WIN32
+    nob_sb_append_cstr(first, "#include <windows.h>\n");
+#else
+    nob_sb_append_cstr(first, "#include <time.h>\n");
+#endif
+    nob_sb_append_cstr(first, 
+        "static void __icPrintTime(double ns) {"
+        "if      (ns<1e3) printf(\"%.5gns\\n\", ns);"
+        "else if (ns<1e6) printf(\"%.4gus\\n\", ns/1e3);"
+        "else if (ns<1e9) printf(\"%.4fms\\n\", ns/1e6);"
+        "else             printf(\"%.5fs\\n\", ns/1e9);}\n");
+#ifdef _WIN32
+    nob_sb_append_cstr(last, "LARGE_INTEGER __icFreq, __icStart, __icEnd;\n");
+    nob_sb_append_cstr(last, "QueryPerformanceFrequency(&__icFreq);\n");
+    nob_sb_append_cstr(last, "QueryPerformanceCounter(&__icStart);\n");
+#else
+    nob_sb_append_cstr(last, "struct timespec __icStart, __icEnd;\n");
+    nob_sb_append_cstr(last, "clock_gettime(CLOCK_MONOTONIC, &__icStart);\n");
+#endif
+    if (!once) {
+        nob_sb_append_cstr(last, "uint64_t __icReps = (");
+        nob_sb_append_buf(last, reps->items, reps->count);
+        nob_sb_append_cstr(last, ");\n");
+        nob_sb_append_cstr(last, "for (uint64_t __icI = 0; __icI<__icReps; ++__icI) {\n");
+    }
+    nob_sb_append_buf(last, out->items, out->count);
+    if (!once) {
+        nob_sb_append_cstr(last, "}\n");
+    }
+#ifdef _WIN32
+    nob_sb_append_cstr(last, "QueryPerformanceCounter(&__icEnd);\n");
+    nob_sb_append_cstr(last, "double __icTimeNs = "
+        "1e9 * (__icEnd.QuadPart - __icStart.QuadPart) / __icFreq.QuadPart;\n");
+#else
+    nob_sb_append_cstr(last, "clock_gettime(CLOCK_MONOTONIC, &__icEnd);\n");
+    nob_sb_append_cstr(last, "double __icTimeNs = "
+        "1e9 * (__icEnd.tv_sec - __icStart.tv_sec) + (__icEnd.tv_nsec - __icStart.tv_nsec);\n");
+#endif
+    nob_sb_append_cstr(last, "printf(\"Elapsed time: \");__icPrintTime(__icTimeNs);\n");
+    if (!once) {
+        nob_sb_append_cstr(last, "printf(\"Average time: \");__icPrintTime(__icTimeNs/__icReps);\n");
+    }
+}
+
+void Help(void)
+{
+    printf("%s",
+        "Commands:\n"
+        CMD_SIGN"h      -- show this help message\n"
+        CMD_SIGN"q      -- quit\n"
+        CMD_SIGN"l      -- list recorded code\n"
+        CMD_SIGN"c      -- clear recorded code\n"
+        CMD_SIGN"o      -- list current compiler options\n"
+        CMD_SIGN"o[...] -- append new compiler options\n"
+        CMD_SIGN"O      -- clear compiler options\n"
+        CMD_SIGN"a      -- list current arguments\n"
+        CMD_SIGN"a[...] -- append new arguments\n"
+        CMD_SIGN"A      -- clear arguments\n"
+        CMD_SIGN"p expr -- print a struct or array\n"
+        CMD_SIGN"P x,sz -- print memory x with size sz\n"
+        CMD_SIGN"t[:n]  -- time the following statement\n"
+        CMD_SIGN"f      -- start a top level statement\n"
+        CMD_SIGN"w      -- warnings as errors (default)\n"
+        CMD_SIGN"W      -- warnings not as errors\n"
+        SHL_SIGN"[...]  -- execute shell command\n"
+        CPP_SIGN"[...]  -- C preprocessor\n"
+        "Macros:\n"
+        "  ONCE_LINE  -- true only the first time on the line\n"
+        "  ONCE       -- execute the following statement only once\n"
+        "  PRINT(X)   -- print the value of X\n"
+        "  BIN(X)     -- get binary representation of integer X\n"
+    );
+}
+
 int main(int argc, char **argv)
 {
     int ok, argStart = 0;
     usz line = 0;
     StrBuilder out = {0}, pre = {0}, first = {0}, 
-        src = {0}, last = {0};
+        src = {0}, last = {0}, temp = {0};
     Nob_Cmd opt = {0}, arg = {0};
     char const *tccPath = GetExePath();
     char const *incPath = nob_temp_sprintf("%s/include", tccPath);
     char const *libPath = nob_temp_sprintf("%s/lib", tccPath);
     RunType rt = RT_MEM;
-    bool isTop = false, werror = true;
+    bool werror = true;
 
     for (int i = 1; i<argc; ++i) {
         char *a = argv[i];
@@ -722,7 +937,9 @@ int main(int argc, char **argv)
     puts("Type \""CMD_SIGN"h\" for help");
     for (;;) {
         usz outLine = line;
-        enum InputKind kind = GetInput(&out, &outLine, isTop);
+        enum InputKind kind = GetInput(&out, &outLine, false, false);
+        enum InputKind kind2;
+        bool once = false;
         if (kind==Empty) {
             continue;
         } else if (kind==InputEnd) {
@@ -732,31 +949,16 @@ int main(int argc, char **argv)
         } else if (kind==Cmd) {
             switch (out.items[1]) {
             default:
+                if (isspace(out.items[1])) {
+                    Help();
+                    continue;
+                }
                 printf("Unknown command \"%.*s\"\n", (int)out.count-1, out.items);
             break; case 'h':
-                printf("%s",
-                    CMD_SIGN"h      -- show this help message\n"
-                    CMD_SIGN"q      -- quit\n"
-                    CMD_SIGN"l      -- list recorded code\n"
-                    CMD_SIGN"c      -- clear recorded code\n"
-                    CMD_SIGN"o      -- list current compiler options\n"
-                    CMD_SIGN"o[...] -- append new compiler options\n"
-                    CMD_SIGN"O      -- clear compiler options\n"
-                    CMD_SIGN"a      -- list current arguments\n"
-                    CMD_SIGN"a[...] -- append new arguments\n"
-                    CMD_SIGN"A      -- clear arguments\n"
-                    CMD_SIGN"p expr -- print a struct or array\n"
-                    CMD_SIGN"P x,sz -- print memory x with size sz\n"
-                    CMD_SIGN"t      -- start a top level statement\n"
-                    CMD_SIGN"T      -- return to main\n"
-                    CMD_SIGN"w      -- warnings as errors (default)\n"
-                    CMD_SIGN"W      -- warnings not as errors\n"
-                    CPP_SIGN"[...]  -- C preprocessor\n"
-                    SHL_SIGN"[...]  -- execute shell command\n"
-                );
+                Help();
             break; case 'q':
                 goto endloop;
-                break; case 'l':
+            break; case 'l':
                 printf("/* top */\n");
                 printf("%.*s", (int)pre.count, pre.items);
                 printf("/* main */\n");
@@ -812,9 +1014,34 @@ int main(int argc, char **argv)
                     goto run_label;
                 }
             break; case 't':
-                isTop = true;
-            break; case 'T':
-                isTop = false;
+                if (out.count-1>2 && out.items[2]==':') {
+                    // time multiple
+                    temp.count = 0;
+                    nob_sb_append_buf(&temp, out.items+3, out.count-4);
+                } else {
+                    // time once
+                    once = true;
+                }
+                outLine = line;
+                kind2 = GetInput(&out, &outLine, false, true);
+                if (kind2==Expr) {
+                    nob_sb_append_cstr(&out, ";");
+                } else if (kind2!=Stmt) {
+                    printf("Expected statement or expression after \""CMD_SIGN"t\"\n");
+                    continue;
+                }
+                AppendTiming(&first, &last, line, once, &temp, &out);
+                goto run_label;
+            break; case 'f':
+                outLine = line;
+                kind2 = GetInput(&out, &outLine, true, false);
+                if (kind2==Stmt) {
+                    kind = Pre;
+                    goto prep_label;
+                } else {
+                    printf("Expected statement after \""CMD_SIGN"f\"\n");
+                    continue;
+                }
             break; case 'w':
                 werror = true;
                 printf("warnings as errors: on\n");
@@ -823,17 +1050,7 @@ int main(int argc, char **argv)
                 printf("warnings as errors: off\n");
             }
         } else {
-            if (isTop) {
-                if (kind==Stmt) {
-                    kind = Pre;
-                    isTop = false;
-                } else if (kind==Expr) {
-                    isTop = false;
-                    printf("Cannot evaluate expression at top level\n");
-                    continue;
-                }
-            }
-
+        prep_label:
             last.count = 0;
             if (kind==Stmt) {
                 AppendLineNum(&last, 1+line);
