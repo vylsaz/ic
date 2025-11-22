@@ -18,6 +18,8 @@
 #define SHL_SIGN ">"
 #define CPP_SIGN "#"
 
+#define IC_EMBED
+
 typedef uint64_t usz;
 typedef Nob_String_Builder StrBuilder;
 
@@ -521,6 +523,68 @@ void ErrFunc(void *opaque, const char *msg)
     fprintf(stderr, "%s\n", msg);
 }
 
+// temp
+bool Embed(StrBuilder *res, StrBuilder *in)
+{
+    usz i;
+    for (i = 0; i<in->count; ++i) {
+        Nob_String_View sv;
+        bool cont = 0;
+        usz j;
+        for (j = 0; i+j<in->count; ++j) {
+            char c = in->items[i+j];
+            if (cont) {
+                cont = 0;
+                continue;
+            }
+            if (cont==0 && c=='\\') {
+                cont = 1;
+            }
+            if (c=='\n') break;
+        }
+        sv = nob_sv_from_parts(&in->items[i], j);
+        if (IsCppOf(sv, "embed")) {
+            usz k, p = 0;
+            bool inQuote = false;
+            for (k = 0; k<sv.count; ++k) {
+                char c = sv.data[k];
+                if (c=='\"') {
+                    if (inQuote) {
+                        break;
+                    } else {
+                        inQuote = true;
+                        p = k+1;
+                    }
+                }
+            }
+            if (p==0 || p >= k) {
+                nob_log(NOB_ERROR, "Invalid #embed directive");
+                return false;
+            }
+            usz n = k - p;
+            StrBuilder filePath = {0}, fileContent = {0};
+            nob_sb_append_buf(&filePath, sv.data+p, n);
+            nob_sb_append_null(&filePath);
+            if (!nob_read_entire_file(filePath.items, &fileContent)) {
+                return false;
+            }
+            for (usz x = 0; x<fileContent.count; ++x) {
+                unsigned char c = fileContent.items[x];
+                nob_sb_append_cstr(res, nob_temp_sprintf("0x%02X", c));
+                if (x+1<fileContent.count) { nob_da_append(res, ','); }
+            }
+            nob_sb_append_cstr(res, "\n");
+            nob_sb_free(filePath);
+            nob_sb_free(fileContent);
+        } else {
+            nob_sb_append_buf(res, sv.data, sv.count);
+            nob_sb_append_cstr(res, "\n");
+        }
+        i += j;
+    }
+    return true;
+}
+
 #define BIN_FUNCTION(BITS) \
     "char *__bin"#BITS"(int"#BITS"_t x) {"\
         "static char b["#BITS"+"#BITS"/4] = {0};"\
@@ -545,7 +609,8 @@ void ErrFunc(void *opaque, const char *msg)
         "if (__LINE__>LASTLINE) "#FUNC"(__VA_ARGS__);"\
     "} while(0)\n"
 
-void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
+// temp
+bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
     StrBuilder *src, StrBuilder *last, StrBuilder *sb)
 {
     static char include[] = 
@@ -670,19 +735,24 @@ void PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
 
     static char epilog[] = "return 0;\n}\n";
 
-    usz mark = nob_temp_save();
     char *lastline = nob_temp_sprintf("#define LASTLINE %zu\n", line);
 
+#ifdef IC_EMBED
+#define IC_APPEND_BUF(SRC) if (!Embed(sb, SRC)) return false;
+#else
+#define IC_APPEND_BUF(SRC) nob_sb_append_buf(sb, (SRC)->items, (SRC)->count)
+#endif
+
     nob_sb_append_cstr(sb, include);
-    nob_sb_append_buf(sb, pre->items, pre->count);
-    nob_sb_append_buf(sb, first->items, first->count);
+    IC_APPEND_BUF(pre);
+    IC_APPEND_BUF(first);
     nob_sb_append_cstr(sb, prolog);
     nob_sb_append_cstr(sb, lastline);
-    nob_sb_append_buf(sb, src->items, src->count);
-    nob_sb_append_buf(sb, last->items, last->count);
+    IC_APPEND_BUF(src);
+    IC_APPEND_BUF(last);
     nob_sb_append_cstr(sb, epilog);
 
-    nob_temp_rewind(mark);
+    return true;
 }
 
 typedef enum RunType {
@@ -722,7 +792,7 @@ int Run(RunType rt,
 
     // prepare in memory c src code
     sbSrc.count = 0;
-    PrepareCString(line, pre, first, src, last, &sbSrc);
+    if (!PrepareCString(line, pre, first, src, last, &sbSrc)) goto end;
     if (rt!=RT_CC) nob_sb_append_null(&sbSrc);
 
     if (rt==RT_CC) {
@@ -834,8 +904,8 @@ void AppendTiming(StrBuilder *first, StrBuilder *last, usz line, bool once, StrB
         "static void __icPrintTime(double ns) {"
         "if      (ns<1e3) printf(\"%.5gns\\n\", ns);"
         "else if (ns<1e6) printf(\"%.4gus\\n\", ns/1e3);"
-        "else if (ns<1e9) printf(\"%.4fms\\n\", ns/1e6);"
-        "else             printf(\"%.5fs\\n\", ns/1e9);}\n");
+        "else if (ns<1e9) printf(\"%.4gms\\n\", ns/1e6);"
+        "else             printf(\"%.5gs\\n\", ns/1e9);}\n");
 #ifdef _WIN32
     nob_sb_append_cstr(last, "LARGE_INTEGER __icFreq, __icStart, __icEnd;\n");
     nob_sb_append_cstr(last, "QueryPerformanceFrequency(&__icFreq);\n");
