@@ -9,3 +9,8 @@ $ cc -o nob nob.c
 $ ./nob
 ```
 
+## Run
+
+```console
+$ ./ic
+```
