@@ -964,6 +964,8 @@ void Help(void)
         CMD_SIGN"t[:n]  -- time the following statement\n"
         CMD_SIGN"f      -- start a top level statement\n"
         CMD_SIGN"m expr -- print out expanded macros\n"
+        CMD_SIGN";      -- rerun the recorded code\n"
+        CMD_SIGN"r[mdc] -- run as memory (m), dll (d) or use cc (c)\n"
         CMD_SIGN"w      -- warnings as errors (default)\n"
         CMD_SIGN"W      -- warnings not as errors\n"
         SHL_SIGN"[...]  -- execute shell command\n"
@@ -1129,6 +1131,20 @@ int main(int argc, char **argv)
                     nob_sb_append_cstr(&last, "));\n");
                     goto run_label;
                 }
+            break; case ';':
+                // reload last
+                goto run_label;
+            break; case 'r':
+                switch (out.items[2]) {
+                default:
+                break; case 'c': rt = RT_CC;
+                break; case 'd': rt = RT_DLL;
+                break; case 'm': rt = RT_MEM;
+                }
+                printf("run type: %s\n",
+                    rt==RT_CC? "cc":
+                    rt==RT_DLL? "dll":
+                    "mem");
             break; case 'w':
                 werror = true;
                 printf("warnings as errors: on\n");
