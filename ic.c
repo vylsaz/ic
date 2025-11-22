@@ -779,12 +779,13 @@ int Run(RunType rt,
     usz i, mark = nob_temp_save();
     int myArgsLen = 1+arg->count;
     char **myArgs = nob_temp_alloc((myArgsLen)*sizeof(char *));
+    char const *exePath = GetExePath();
 #ifdef _WIN32
     HMODULE h = NULL;
-    char const *outPath = nob_temp_sprintf("%s/temp/ic.dll", GetExePath());
+    char const *outPath = nob_temp_sprintf("%s/temp/ic.dll", exePath);
 #else
     void *h = NULL;
-    char const *outPath = nob_temp_sprintf("%s/temp/ic.so", GetExePath());
+    char const *outPath = nob_temp_sprintf("%s/temp/ic.so", exePath);
 #endif
 
     // args to main
@@ -801,7 +802,7 @@ int Run(RunType rt,
     if (rt==RT_CC) {
         Nob_Cmd cc = {0};
         char *ccc;
-        char const *inpPath = nob_temp_sprintf("%s/temp/_ic.c", GetExePath());
+        char const *inpPath = nob_temp_sprintf("%s/temp/_ic.c", exePath);
         nob_write_entire_file(inpPath, sbSrc.items, sbSrc.count);
 
         ccc = GetCC();
@@ -818,6 +819,7 @@ int Run(RunType rt,
         }
         nob_cc_inputs(&cc, inpPath);
         nob_da_append(&cc, "-shared");
+        nob_da_append(&cc, nob_temp_sprintf("-I%s", exePath)); // for nob.h
         nob_cc_output(&cc, outPath);
 
         if (!nob_cmd_run(&cc)) goto end;
@@ -840,6 +842,7 @@ int Run(RunType rt,
     #ifndef _WIN32
         tcc_add_library_path(s, tccPath);
     #endif
+        tcc_add_include_path(s, exePath); // for nob.h
         r = tcc_compile_string(s, sbSrc.items);
         if (r==-1) goto end;
     }
