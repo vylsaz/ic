@@ -618,6 +618,7 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         "#include <stdlib.h>\n"
         "#include <string.h>\n"
         "#include <stdbool.h>\n"
+        "#include <stdalign.h>\n"
         "#include <math.h>\n"
         "#include <inttypes.h>\n"
         "#include <wchar.h>\n"
@@ -635,6 +636,8 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         BIN_FUNCTION(8) BIN_FUNCTION(16) BIN_FUNCTION(32) BIN_FUNCTION(64)
         "#define BIN(X) _Generic((X),"
             GEN_BIN(8) GEN_BIN(16) GEN_BIN(32) GEN_BIN(64) "default:__bin64)(X)\n"
+        "#define __IC_STRINGIFY1(...) #__VA_ARGS__\n"
+        "#define __IC_STRINGIFY(...) __IC_STRINGIFY1(__VA_ARGS__)\n"
         "#define ONCE_LINE (__LINE__>LASTLINE)\n"
         "#define ONCE if (__LINE__>LASTLINE)\n"
         "#define PRINT(X) "
@@ -957,6 +960,7 @@ void Help(void)
         CMD_SIGN"P x,sz -- print memory x with size sz\n"
         CMD_SIGN"t[:n]  -- time the following statement\n"
         CMD_SIGN"f      -- start a top level statement\n"
+        CMD_SIGN"m expr -- print out expanded macros\n"
         CMD_SIGN"w      -- warnings as errors (default)\n"
         CMD_SIGN"W      -- warnings not as errors\n"
         SHL_SIGN"[...]  -- execute shell command\n"
@@ -1111,6 +1115,16 @@ int main(int argc, char **argv)
                 } else {
                     printf("Expected statement after \""CMD_SIGN"f\"\n");
                     continue;
+                }
+            break; case 'm':
+                if (out.count-1>2) {
+                    first.count = 0;
+                    last.count = 0;
+                    AppendLineNum(&last, 1+line);
+                    nob_sb_append_cstr(&last, "printf(\"%s\\n\", __IC_STRINGIFY(");
+                    nob_sb_append_buf(&last, out.items+2, out.count-3);
+                    nob_sb_append_cstr(&last, "));\n");
+                    goto run_label;
                 }
             break; case 'w':
                 werror = true;
