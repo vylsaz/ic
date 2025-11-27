@@ -793,18 +793,22 @@ char *mlEditFeed(mlEditBuf *eb)
         break;
     case ML_KEY_LEFT:
     case ML_KEY_CTRL_B:
+        isRecall = st->history->isRecall;
         mlEditMoveLeft(eb);
         break;
     case ML_KEY_RIGHT:
     case ML_KEY_CTRL_F:
+        isRecall = st->history->isRecall;
         mlEditMoveRight(eb);
         break;
     case ML_KEY_HOME:
     case ML_KEY_CTRL_A:
+        isRecall = st->history->isRecall;
         mlEditMoveHome(eb);
         break;
     case ML_KEY_END:
     case ML_KEY_CTRL_E:
+        isRecall = st->history->isRecall;
         mlEditMoveEnd(eb);
         break;
     case ML_KEY_CTRL_W:
