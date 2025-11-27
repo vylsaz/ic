@@ -843,7 +843,7 @@ char *mlEditFeed(mlEditBuf *eb)
     return mlEditInAction;
 }
 
-char *mlReadLine(char const *prompt)
+char *mlReadLineTTY(char const *prompt)
 {
     char *res;
     mlEditBuf eb = {0};
@@ -861,6 +861,42 @@ char *mlReadLine(char const *prompt)
     puts("");
     mlDaFree(eb);
     return res;
+}
+
+char *mlReadLineNoTTY(char const *prompt)
+{
+    char inp[256] = {0};
+    struct Out {
+        char *els;
+        size_t len, cap;
+    } out = {0};
+    size_t const inpLen = sizeof(inp)-1;
+    printf("%s", prompt);
+    do {
+        if (fgets(inp, inpLen, stdin)==NULL) return 0;
+        mlDaAppendN(&out, inp, strlen(inp));
+    } while (out.els[out.len-1] != '\n');
+    out.els[out.len-1] = '\0'; // remove newline
+    printf("%s\n", out.els);
+    return out.els;
+}
+
+int mlIsATTY(void)
+{
+#ifdef _WIN32
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return isatty(fileno(stdin)) != 0;
+#endif
+}
+
+char *mlReadLine(char const *prompt)
+{
+    if (mlIsATTY()) {
+        return mlReadLineTTY(prompt);
+    } else {
+        return mlReadLineNoTTY(prompt);
+    }
 }
 
 /*
