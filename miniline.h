@@ -865,20 +865,25 @@ char *mlReadLineTTY(char const *prompt)
 
 char *mlReadLineNoTTY(char const *prompt)
 {
-    char inp[256] = {0};
     struct Out {
         char *els;
         size_t len, cap;
     } out = {0};
-    size_t const inpLen = sizeof(inp)-1;
     printf("%s", prompt);
-    do {
-        if (fgets(inp, inpLen, stdin)==NULL) return 0;
-        mlDaAppendN(&out, inp, strlen(inp));
-    } while (out.els[out.len-1] != '\n');
-    out.els[out.len-1] = '\0'; // remove newline
-    printf("%s\n", out.els);
-    return out.els;
+    for (;;) {
+        int c = fgetc(stdin);
+        if (c == EOF || c == '\n') {
+            if (c == EOF && out.len == 0) {
+                return NULL;
+            } else {
+                mlDaAppend(&out, '\0');
+                printf("%s\n", out.els);
+                return out.els;
+            }
+        } else {
+            mlDaAppend(&out, c);
+        }
+    }
 }
 
 int mlIsATTY(void)

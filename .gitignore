@@ -5,6 +5,7 @@ nob
 *.def
 *.a
 *.o
+*.so
 ic
 .vscode/
 include/
