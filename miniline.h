@@ -75,6 +75,7 @@ enum mlKeySpecial {
     ML_KEY_CTRL_F = 6,
     ML_KEY_CTRL_H = 8,
     ML_KEY_TAB    = 9,
+    ML_KEY_CTRL_J = 10,
     ML_KEY_CTRL_K = 11,
     ML_KEY_CTRL_L = 12,
     ML_KEY_ENTER  = 13,
@@ -773,6 +774,7 @@ char *mlEditFeed(mlEditBuf *eb)
         mlEditInsert(eb, key);
         break;
     case ML_KEY_ENTER:
+    case ML_KEY_CTRL_J:
         mlEditHistoryCommit(eb, st->history);
         mlEditMoveEnd(eb);
         return mlStrFromEditBuf(eb);
