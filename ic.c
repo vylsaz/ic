@@ -214,11 +214,16 @@ int SbReadLine(StrBuilder *out, char const *prompt)
 #endif
 }
 
+bool TrimPrefixSv(Nob_String_View sv, char const *cstr)
+{
+    sv = nob_sv_trim_left(sv);
+    return nob_sv_starts_with(sv, nob_sv_from_cstr(cstr));
+}
+
 bool TrimPrefix(StrBuilder *out, char const *cstr)
 {
     Nob_String_View sv = nob_sv_from_parts(out->items, out->count);
-    sv = nob_sv_trim_left(sv);
-    return nob_sv_starts_with(sv, nob_sv_from_cstr(cstr));
+    return TrimPrefixSv(sv, cstr);
 }
 
 bool IsEmpty(StrBuilder *out)
@@ -621,6 +626,7 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         "#include <stdalign.h>\n"
         "#include <math.h>\n"
         "#include <inttypes.h>\n"
+        "#include <float.h>\n"
         "#include <wchar.h>\n"
     #if defined(_WIN32)
         "#ifdef __TINYC__\n"
@@ -649,8 +655,10 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
                 "uint32_t:__printu32,uint64_t:__printu64,"
             #ifdef _WIN32
                 "long:__printil,unsigned long:__printul,"
+            #else
+                "long long:__printill,unsigned long long:__printull,"
             #endif
-                "float:__printf32,double:__printf64,"
+                "float:__printf32,double:__printf64,long double:__printld,"
                 "bool:__printb,char:__printc,"
                 "char*:__prints,char const*:__printcs,"
                 "wchar_t*:__printws,wchar_t const*:__printwcs,"
@@ -690,9 +698,17 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         "void __printul(unsigned long x) {printf(\"(unsigned long) %lu = \",x);"
             "if (4==sizeof(long)) printf(\"0x%08lX\\n\",x);"
             "else printf(\"0x%016lX\\n\",x);}\n"
+    #else
+        "void __printill(long long x) {printf(\"(long long) %lld = \",x);"
+            "if (8==sizeof(long long)) printf(\"0x%016llX\\n\",x);"
+            "else printf(\"0x%08llX\\n\",x);}\n"
+        "void __printull(unsigned long long x) {printf(\"(unsigned long long) %llu = \",x);"
+            "if (8==sizeof(unsigned long long)) printf(\"0x%016llX\\n\",x);"
+            "else printf(\"0x%08llX\\n\",x);}\n"
     #endif
         "void __printf32(double x) {printf(\"(float) %g\\n\",x);}\n"
         "void __printf64(float x) {printf(\"(double) %g\\n\",x);}\n"
+        "void __printld(long double x) {printf(\"(long double) %Lg\\n\",x);}\n"
         "void __printb(_Bool x) {printf(\"%s\\n\",x?\"true\":\"false\");}\n"
         "void __printc(char x) {"
             "switch (x) {"
@@ -978,6 +994,114 @@ void Help(void)
     );
 }
 
+void CompleteFunc(char const *buf, int cursorPos, mlCompletions *comp, void *userdata)
+{
+    static char const *const cpp[] = {
+        "define", "undef", "if", "ifdef", "ifndef", "else", "elif", "endif",
+        "include", "embed", "line", "error", "pragma",
+    };
+
+    static char const *const keywords[] = {
+        "if", "else", 
+        "for", "do", "while",
+        "switch", "case", "default", 
+        "return", "goto", "auto",
+    };
+
+    static char const *const stmtLike[] = {
+        "break", "continue",
+    };
+
+    static char const *const typeLike[] = {
+        "int", "char", "float", "double", "void", "short", "long", "signed",
+        "unsigned", "struct", "union", "enum", "const", "volatile", "static",
+        "extern", "register", "inline", "restrict",
+        // C11
+        "bool",
+        // known types
+        "size_t", "ssize_t", "wchar_t",
+        "int8_t", "int16_t", "int32_t", "int64_t",
+        "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+        // stdint.h
+        "intmax_t", "intptr_t", "uintmax_t", "uintptr_t",
+        // defined by me
+        "ONCE",
+    };
+
+    static char const *const funcLike[] = {
+        // standard functions
+        "printf", "scanf", "malloc", "free", "realloc", "calloc",
+        "memcpy", "memset", "puts", "putchar",
+        "atoi", "atol", "atoll", "strtol", "strtoll",
+        "strtoul", "strtoull", "strcpy", "strncpy", "strlen",
+        // math functions
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+        "exp", "pow", "log", "sqrt", "cbrt", "lgamma", "tgamma",
+        "abs", "labs", "llabs", "fabs", "fmod", "fmin", "fmax",
+        "ceil", "floor", "round", "trunc",
+        // inttypes.h
+        "INT8_C", "INT16_C", "INT32_C", "INT64_C",
+        "UINT8_C", "UINT16_C", "UINT32_C", "UINT64_C",
+        // others
+        "sizeof", "alignof", "alignas",
+        // defined by me
+        "PRINT", "BIN",
+    };
+
+    static char const *const constLike[] = {
+        "NULL", "true", "false",
+        "SIZE_MAX", "WCHAR_MAX", "WCHAR_MIN",
+        "CHAR_BIT", "SCHAR_MAX", "SCHAR_MIN", "UCHAR_MAX",
+        // inttypes.h
+        "INT8_MAX", "INT16_MAX", "INT32_MAX", "INT64_MAX",
+        "INT8_MIN", "INT16_MIN", "INT32_MIN", "INT64_MIN",
+        "UINT8_MAX", "UINT16_MAX", "UINT32_MAX", "UINT64_MAX",
+        "PRId8", "PRId16", "PRId32", "PRId64", "PRIdPTR",
+        "PRIu8", "PRIu16", "PRIu32", "PRIu64", "PRIuPTR",
+        "PRIx8", "PRIx16", "PRIx32", "PRIx64", "PRIxPTR",
+        "SCNd8", "SCNd16", "SCNd32", "SCNd64", "SCNdPTR",
+        "SCNu8", "SCNu16", "SCNu32", "SCNu64", "SCNuPTR",
+        "SCNx8", "SCNx16", "SCNx32", "SCNx64", "SCNxPTR",
+        // float.h
+        "FLT_MAX", "FLT_MIN", "DBL_MAX", "DBL_MIN", "LDBL_MAX", "LDBL_MIN",
+        "FLT_EPSILON", "DBL_EPSILON", "LDBL_EPSILON",
+    };
+
+    (void) userdata;
+
+    int start;
+    for (start = cursorPos-1; start>=0; --start) {
+        char c = buf[start];
+        if (isalnum(c) || c=='_') { continue; }
+        break;
+    }
+    start += 1;
+    mlSetCompletionStart(comp, start);
+
+    int count = cursorPos - start;
+    if (count==0) return;
+
+    size_t mark = nob_temp_save();
+    #define FIND_IN_LIST(LIST, FMT) \
+        for (usz i = 0; i<sizeof(LIST)/sizeof(*LIST); ++i) { \
+            if (strncmp(buf+start, LIST[i], count)==0) { \
+                char *replacement = nob_temp_sprintf(FMT, LIST[i]); \
+                mlAddCompletion(comp, replacement, LIST[i]); \
+            } \
+        }
+    if (TrimPrefixSv(nob_sv_from_cstr(buf), CPP_SIGN)) {
+        FIND_IN_LIST(cpp, "%s ")
+    } else {
+        FIND_IN_LIST(keywords, "%s ")
+        FIND_IN_LIST(stmtLike, "%s;")
+        FIND_IN_LIST(typeLike, "%s ")
+        FIND_IN_LIST(funcLike, "%s(")
+        FIND_IN_LIST(constLike, "%s")
+    }
+    nob_temp_rewind(mark);
+}
+
+
 int main(int argc, char **argv)
 {
     int ok, argStart = 0;
@@ -990,6 +1114,8 @@ int main(int argc, char **argv)
     char const *libPath = nob_temp_sprintf("%s/lib", tccPath);
     RunType rt = RT_MEM;
     bool werror = true;
+
+    mlSetCompletionCallback(CompleteFunc, NULL);
 
     for (int i = 1; i<argc; ++i) {
         char *a = argv[i];
