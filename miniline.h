@@ -18,6 +18,12 @@ MINILINE_API void mlSetCompletionCallback(mlCompleteFunc func, void *userdata);
 MINILINE_API void mlAddCompletion(mlCompletions *comp, char const *replacement, char const *display);
 MINILINE_API void mlSetCompletionStart(mlCompletions *comp, int start);
 
+enum mlCompleteMode {
+    mlCompleteMode_Circular, // default
+    mlCompleteMode_List,
+};
+MINILINE_API void mlSetCompletionMode(enum mlCompleteMode mode);
+
 // flags:
 // #define MINILINE_IGNORE_ZWJ
 
@@ -77,6 +83,7 @@ typedef struct mlCompleter {
     mlCompleteFunc func;
     void *userdata;
     int tabState;
+    enum mlCompleteMode mode;
 } mlCompleter;
 
 // typedef struct mlState mlState;
@@ -419,6 +426,11 @@ void mlHistoryPop(mlHistory *h)
     h->his.len -= 1;
 }
 
+void mlSetCompletionMode(enum mlCompleteMode mode)
+{
+    st->completer.mode = mode;
+}
+
 void mlAddCompletion(mlCompletions *comp, char const *replacement, char const *display)
 {
     struct mlCompletionPair pair = {
@@ -541,37 +553,6 @@ typedef struct mlCodePoints {
     size_t len, cap;
 } mlCodePoints;
 
-static int mlUtf8CharLen(unsigned char c)
-{
-    if ((c & 0x80) == 0) {
-        return 1;
-    } else if ((c & 0xE0) == 0xC0) {
-        return 2;
-    } else if ((c & 0xF0) == 0xE0) {
-        return 3;
-    } else if ((c & 0xF8) == 0xF0) {
-        return 4;
-    } else {
-        return -1; // invalid
-    }
-}
-
-static int mlUtf8CodePointCounts(char const *s, int slen)
-{
-    int count = 0;
-    unsigned char const *p = (unsigned char const *)s;
-    while (slen > 0) {
-        int charlen = mlUtf8CharLen(*p);
-        if (charlen < 0 || charlen > slen) {
-            return -1; // invalid
-        }
-        p += charlen;
-        slen -= charlen;
-        count += 1;
-    }
-    return count;
-}
-
 static void mlCodePointsFromCstr(mlCodePoints *cps, char const *cstr)
 {
     unsigned char const *s = (unsigned char const *)cstr;
@@ -643,6 +624,37 @@ static char *mlStrFromEditBufPos(mlEditBuf *eb, int *pos)
     if (i == eb->pos) { *pos = (int)sb.len; }
     mlDaAppend(&sb, '\0');
     return sb.els;
+}
+
+static int mlUtf8LengthFromCodepoint(int cp)
+{
+    if (cp < 0x80) {
+        return 1;
+    } else if (cp < 0x800) {
+        return 2;
+    } else if (cp < 0x10000) {
+        return 3;
+    } else {
+        return 4;
+    }
+}
+
+static int mlEditBufOffsetFromUtf8Length(mlEditBuf *eb, int len)
+{
+    int count = 0;
+    for (int i = eb->fixed; i < eb->len; ++i) {
+        int cp = eb->els[i];
+        int cpLen = mlUtf8LengthFromCodepoint(cp);
+        len -= cpLen;
+        count += 1;
+        if (len < 0) {
+            return -1;
+        } else if (len == 0) {
+            break;
+        }
+    }
+
+    return count;
 }
 
 static void mlRefreshLine(mlEditBuf *eb)
@@ -748,7 +760,7 @@ static void mlEditInsert(mlEditBuf *eb, int c)
 static void mlEditInsertCompletion(mlEditBuf *eb, char const *completion, int start)
 {
     // replace from start to pos with completion
-    int bufStart = mlUtf8CodePointCounts(completion, start);
+    int bufStart = mlEditBufOffsetFromUtf8Length(eb, start);
     if (bufStart < 0) return;
     int ebStart = eb->fixed + bufStart;
     int dif = eb->len - eb->pos;
@@ -931,7 +943,7 @@ static void mlLongestCommonPrefixInput(mlStrBuilder *sb, char *input)
     sb->len = i;
 }
 
-static int mlEditComplete(mlEditBuf *eb)
+static int mlEditCompleteList(mlEditBuf *eb)
 {
     int tabState = 0;
     if (eb->pos <= eb->fixed) {
@@ -992,6 +1004,56 @@ static int mlEditComplete(mlEditBuf *eb)
         free(buf);
     }
     return tabState;
+}
+
+static int mlEditCompleteCircular(mlEditBuf *eb)
+{
+    int tab = st->completer.tabState - 1;
+    mlCompletions *comps = &st->completer.entries;
+
+    if (st->completer.tabState == 0) {
+        tab = 0;
+        // get completions
+        int cursorPos;
+        char *buf = mlStrFromEditBufPos(eb, &cursorPos);
+        mlCompletionsClear(comps);
+        st->completer.func(buf, cursorPos, comps, st->completer.userdata);
+
+        if (comps->start >= cursorPos) {
+            free(buf);
+            mlBeep();
+            return 0;
+        }
+        // current as last option
+        mlStrBuilder sb = {0};
+        mlDaAppendN(&sb, &buf[comps->start], cursorPos - comps->start);
+        mlDaAppend(&sb, '\0');
+
+        mlAddCompletion(comps, sb.els, sb.els);
+        mlDaFree(sb);
+        free(buf);
+    }
+
+    char *comp = comps->els[tab].replacement;
+    mlEditInsertCompletion(eb, comp, comps->start);
+
+    tab += 1;
+    if (tab >= comps->len) {
+        mlBeep();
+        tab = 0;
+    }
+    return 1 + tab;
+}
+
+static int mlEditComplete(mlEditBuf *eb)
+{
+    switch (st->completer.mode) {
+    default:
+    case mlCompleteMode_Circular:
+        return mlEditCompleteCircular(eb);
+    case mlCompleteMode_List:
+        return mlEditCompleteList(eb);
+    }
 }
 
 char *mlEditInAction = "mlEditInAction YOU SHOULD NOT SEE THIS";
