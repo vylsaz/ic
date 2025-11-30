@@ -1,5 +1,6 @@
 #define MINILINE_IMPLEMENTATION
 #define MINILINE_IGNORE_ZWJ
+#define MINILINE_HISTORY_SKIP_DUPLICATES
 #include "miniline.h"
 
 #include "libtcc/libtcc.h"
@@ -1099,6 +1100,17 @@ void CompleteFunc(char const *buf, int cursorPos, mlCompletions *comp, void *use
 
     (void) userdata;
 
+    if (buf[0]==CMD_SIGN[0] && cursorPos==1) {
+        mlSetCompletionStart(comp, 1);
+        static char const cmds[] = "qhflpPmt;";
+        char s[2] = {0};
+        for (usz i = 0; i<sizeof(cmds)-1; ++i) {
+            s[0] = cmds[i];
+            mlAddCompletion(comp, s, s);
+        }
+        return;
+    }
+
     int start;
     for (start = cursorPos-1; start>=0; --start) {
         char c = buf[start];
@@ -1145,6 +1157,7 @@ int main(int argc, char **argv)
     RunType rt = RT_MEM;
     bool werror = true;
 
+    mlSetCompletionMode(mlCompleteMode_Circular);
     mlSetCompletionCallback(CompleteFunc, NULL);
 
     for (int i = 1; i<argc; ++i) {
