@@ -920,7 +920,7 @@ static void mlBeep(void) {
     fflush(stderr);
 }
 
-static void mlLongestCommonPrefixFree(mlStrBuilder *sb, char *input)
+static void mlLongestCommonPrefixInput(mlStrBuilder *sb, char *input)
 {
     int n = strlen(input), m = sb->len;
     if (n < m) m = n;
@@ -975,10 +975,10 @@ static int mlEditComplete(mlEditBuf *eb)
             // find longest common prefix
             mlDaAppendN(&lcp, comps->els[0].replacement, (int)strlen(comps->els[0].replacement));
             for (int i = 1; i < comps->len; ++i) {
-                mlLongestCommonPrefixFree(&lcp, comps->els[i].replacement);
+                mlLongestCommonPrefixInput(&lcp, comps->els[i].replacement);
                 if (lcp.len == 0) { break; }
             }
-            if (lcp.len > strlen(buf)) {
+            if (comps->start + lcp.len > strlen(buf)) {
                 // insert the common prefix
                 mlDaAppend(&lcp, '\0');
                 mlEditInsertCompletion(eb, lcp.els, comps->start);
