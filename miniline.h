@@ -34,6 +34,8 @@ MINILINE_API void mlSetCompletionMode(enum mlCompleteMode mode);
 
 // flags:
 // #define MINILINE_IGNORE_ZWJ
+// #define MINILINE_HISTORY_SKIP_DUPLICATES
+// #define MINILINE_HISTORY_NO_COMMIT_ON_RECALL
 
 #endif // MINILINE_H_
 
@@ -407,6 +409,7 @@ void mlHistoryReset(mlHistory *h)
 
 void mlHistoryPush(mlHistory *h, int const *entry, int entryLen)
 {
+#ifdef MINILINE_HISTORY_SKIP_DUPLICATES
     // skip duplicates
     if (h->his.len > 0) {
         mlHistoryEntry last = mlDaLast(&h->his);
@@ -416,6 +419,7 @@ void mlHistoryPush(mlHistory *h, int const *entry, int entryLen)
             }
         }
     }
+#endif
     int buflen = h->buf.len;
     if (entryLen > 0) {
         mlDaAppendN(&h->buf, entry, entryLen);
@@ -889,7 +893,9 @@ static void mlEditMoveEnd(mlEditBuf *eb)
 static void mlEditHistoryCommit(mlEditBuf *eb, mlHistory *h)
 {
     mlHistoryPop(h);
+#ifdef MINILINE_HISTORY_NO_COMMIT_ON_RECALL
     if (h->isRecall && h->pos != 0) return;
+#endif
     int entryLen = eb->len - eb->fixed;
     if (entryLen == 0) return;
     mlHistoryPush(h, &eb->els[eb->fixed], entryLen);
