@@ -641,6 +641,8 @@ static int mlUtf8LengthFromCodepoint(int cp)
 
 static int mlEditBufOffsetFromUtf8Length(mlEditBuf *eb, int len)
 {
+    if (len < 0) return -1;
+    if (len == 0) return 0;
     int count = 0;
     for (int i = eb->fixed; i < eb->len; ++i) {
         int cp = eb->els[i];
@@ -761,12 +763,12 @@ static void mlEditInsertCompletion(mlEditBuf *eb, char const *completion, int st
 {
     // replace from start to pos with completion
     int bufStart = mlEditBufOffsetFromUtf8Length(eb, start);
-    if (bufStart < 0) return;
+    if (bufStart < 0) { return; }
     int ebStart = eb->fixed + bufStart;
     int dif = eb->len - eb->pos;
-    if (dif < 0) return;
+    if (dif < 0) { return; }
     int replaceLen = eb->pos - ebStart;
-    if (replaceLen < 0) return;
+    if (replaceLen < 0) { return; }
 
     mlCodePoints comp = {0};
     mlCodePointsFromCstr(&comp, completion);
