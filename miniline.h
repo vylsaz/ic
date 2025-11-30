@@ -1021,7 +1021,7 @@ static int mlEditCompleteCircular(mlEditBuf *eb)
         mlCompletionsClear(comps);
         st->completer.func(buf, cursorPos, comps, st->completer.userdata);
 
-        if (comps->start >= cursorPos) {
+        if (comps->start > cursorPos) {
             free(buf);
             mlBeep();
             return 0;
