@@ -499,26 +499,56 @@ void SpawnShell(char const *sh, usz len)
     nob_da_free(cmd);
 }
 
+#ifdef _WIN32
+
 // temp
-char *GetCC(void)
+WCHAR *WstrFromCstr(char const *str)
+{
+    int len = MultiByteToWideChar(CP_UTF8, 0, str, -1, NULL, 0);
+    WCHAR *wstr = nob_temp_alloc(len * sizeof(WCHAR));
+    MultiByteToWideChar(CP_UTF8, 0, str, -1, wstr, len);
+    return wstr;
+}
+
+// temp
+char *CstrFromWstr(WCHAR const *wstr)
+{
+    int len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, NULL, 0, NULL, NULL);
+    char *str = nob_temp_alloc(len);
+    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, str, len, NULL, NULL);
+    return str;
+}
+
+#endif
+
+char *GetEnvTemp(char const *name)
 {
 #ifdef _WIN32
-    static WCHAR buf[32767]; 
-    int len; char *str;
-    ZeroMemory(&buf, sizeof(buf));
-    if (GetEnvironmentVariableW(L"CC", (LPWSTR)&buf, 32767)==0) {
+    WCHAR *wname = WstrFromCstr(name);
+    DWORD dwSz = GetEnvironmentVariableW(wname, NULL, 0);
+    if (dwSz==0) {
         return NULL;
     }
-    len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, NULL, 0, NULL, NULL);
-    str = nob_temp_alloc(len);
-    WideCharToMultiByte(CP_UTF8, 0, buf, -1, str, len, NULL, NULL);
-    return str;
+
+    WCHAR *wstr = nob_temp_alloc(dwSz * sizeof(WCHAR));
+    GetEnvironmentVariableW(wname, wstr, dwSz);
+    return CstrFromWstr(wstr);
 #else
-    char *str = getenv("CC");
+    char *str = getenv(name);
     if (str==NULL) {
         return NULL;
     }
     return nob_temp_strdup(str);
+#endif
+}
+
+// temp
+char *GetCC(void)
+{
+#ifdef _WIN32
+    return GetEnvTemp("CC");
+#else
+    return GetEnvTemp("CC");
 #endif
 }
 
