@@ -7,6 +7,14 @@
 
 MINILINE_API char *mlReadLine(char const *prompt);
 
+typedef struct mlHistory mlHistory;
+extern mlHistory *mlHistoryDefault;
+MINILINE_API int mlGetHistoryLen(mlHistory *history);
+MINILINE_API char *mlGetHistoryEntry(mlHistory *history, int index);
+MINILINE_API int mlHistoryLoad(mlHistory *history, char const *path);
+MINILINE_API int mlHistorySave(mlHistory *history, char const *path);
+MINILINE_API int mlHistoryWriteFrom(mlHistory *history, char const *path, int start, int isAppend);
+
 typedef struct mlCompletions mlCompletions;
 typedef void (*mlCompleteFunc)(
     char const *buf,
@@ -54,7 +62,7 @@ typedef struct mlHistoryEntry {
     int len;
 } mlHistoryEntry;
 
-typedef struct mlHistory {
+struct mlHistory {
     struct {
         mlHistoryEntry *els;
         int len, cap;
@@ -65,9 +73,10 @@ typedef struct mlHistory {
     } buf;
     int pos; // position in history
     int isRecall;
-} mlHistory;
+};
 
 mlHistory mlHistoryGlobal = {0};
+mlHistory *mlHistoryDefault = &mlHistoryGlobal;
 
 struct mlCompletions {
     struct mlCompletionPair {
@@ -1203,6 +1212,178 @@ char *mlReadLine(char const *prompt)
     } else {
         return mlReadLineNoTTY(prompt);
     }
+}
+
+int mlGetHistoryLen(mlHistory *history)
+{
+    return history->his.len;
+}
+
+char *mlGetHistoryEntry(mlHistory *history, int index)
+{
+    if (index < 0 || index >= history->his.len) {
+        return NULL;
+    }
+    mlHistoryEntry he = history->his.els[index];
+    mlStrBuilder sb = {0};
+    for (int i = 0; i < he.len; ++i) {
+        mlAppendUtf8(&sb, history->buf.els[he.offset + i]);
+    }
+    mlDaAppend(&sb, '\0');
+    return sb.els;
+}
+
+#ifdef _WIN32
+typedef struct mlWStrBuilder {
+    WCHAR *els;
+    int cap, len;
+} mlWStrBuilder;
+
+void mlWsbAppendStr(mlWStrBuilder *wsb, char const *str, int len)
+{
+    int n = MultiByteToWideChar(CP_UTF8, 0, str, len, NULL, 0);
+    mlDaReserve(wsb, wsb->len+n, ML_DA_DEFAULT_CAP);
+    wsb->len += MultiByteToWideChar(CP_UTF8, 0, str, len, wsb->els+wsb->len, n);
+}
+#endif
+
+#define ml_return_defer(val) do { result = (val); goto defer; } while(0)
+static int mlReadFile(mlStrBuilder *sb, char const *path)
+{
+    int result = 1;
+    FILE *f;
+#ifdef _WIN32
+    mlWStrBuilder wsb = {0};
+    mlWsbAppendStr(&wsb, path, (int)strlen(path));
+    mlDaAppend(&wsb, L'\0');
+    f = _wfopen(wsb.els, L"rb");
+    mlDaFree(wsb);
+#else
+    f = fopen(path, "rb");
+#endif
+    if (f == NULL)                 ml_return_defer(0);
+    if (fseek(f, 0, SEEK_END) < 0) ml_return_defer(0);
+#ifdef _WIN32
+    long long m = _telli64(_fileno(f));
+#else
+    long m = ftell(f);
+#endif
+    if (m < 0)                     ml_return_defer(0);
+    if (fseek(f, 0, SEEK_SET) < 0) ml_return_defer(0);
+
+    size_t new_len = sb->len + m;
+    if (new_len > sb->cap) {
+        sb->els = realloc(sb->els, new_len);
+        assert(sb->els != NULL && "out of memory");
+        sb->cap = new_len;
+    }
+
+    fread(sb->els + sb->len, m, 1, f);
+    if (ferror(f)) {
+        ml_return_defer(0);
+    }
+    sb->len = new_len;
+
+defer:
+    if (f) fclose(f);
+    return result;
+}
+
+static int mlWriteFile(char const *path, char const *data, size_t size, int isAppend)
+{
+    FILE *f;
+    int result = 1;
+    const char *buf = NULL;
+
+#ifdef _WIN32
+    mlWStrBuilder wsb = {0};
+    mlWsbAppendStr(&wsb, path, (int)strlen(path));
+    mlDaAppend(&wsb, L'\0');
+    f = _wfopen(wsb.els, isAppend ? L"ab" : L"wb");
+    mlDaFree(wsb);
+#else
+    f = fopen(path, isAppend ? "ab" : "wb");
+#endif
+    if (f == NULL) { ml_return_defer(0); }
+
+    //           len
+    //           v
+    // aaaaaaaaaa
+    //     ^
+    //     data
+
+    buf = data;
+    while (size > 0) {
+        size_t n = fwrite(buf, 1, size, f);
+        if (ferror(f)) { ml_return_defer(0); }
+        size -= n;
+        buf  += n;
+    }
+
+defer:
+    if (f) fclose(f);
+    return result;
+}
+#undef ml_return_defer
+
+static char *mlMyStrNDup(char const *s, size_t n)
+{
+    char *res = malloc(n + 1);
+    assert(res != NULL && "out of memory");
+    memcpy(res, s, n);
+    res[n] = '\0';
+    return res;
+}
+
+int mlHistoryLoad(mlHistory *history, char const *path)
+{
+    size_t pos = 0;
+    mlCodePoints cps = {0};
+    mlStrBuilder sb = {0};
+    if (!mlReadFile(&sb, path)) {
+        return 0;
+    }
+    while (pos < sb.len) {
+        size_t lineStart = pos;
+        while (pos < sb.len && sb.els[pos] != '\n') {
+            pos++;
+        }
+        size_t lineLen = pos - lineStart;
+        cps.len = 0;
+        char *cstr = mlMyStrNDup(&sb.els[lineStart], lineLen);
+        mlCodePointsFromCstr(&cps, cstr);
+        free(cstr);
+
+        if (lineLen > 0) {
+            mlHistoryPush(history, cps.els, cps.len);
+        }
+        if (pos < sb.len && sb.els[pos] == '\n') {
+            pos++;
+        }
+    }
+    mlDaFree(sb);
+    mlDaFree(cps);
+    return 1;
+}
+
+int mlHistoryWriteFrom(mlHistory *history, char const *path, int start, int isAppend)
+{
+    mlStrBuilder sb = {0};
+    int historyLen = mlGetHistoryLen(history);
+    for (int i = start; i < historyLen; ++i) {
+        char *entry = mlGetHistoryEntry(history, i);
+        mlSbAppendCstr(&sb, entry);
+        mlDaAppend(&sb, '\n');
+        free(entry);
+    }
+    int result = mlWriteFile(path, sb.els, sb.len, isAppend);
+    mlDaFree(sb);
+    return result;
+}
+
+int mlHistorySave(mlHistory *history, char const *path)
+{
+    return mlHistoryWriteFrom(history, path, 0, 0);
 }
 
 /*
