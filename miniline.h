@@ -1156,6 +1156,9 @@ char *mlEditFeed(mlEditBuf *eb)
             tabState = mlEditComplete(eb);
         }
         break;
+    case ML_KEY_ESCAPE:
+        // do nothing
+        break;
     }
     st->history->isRecall = isRecall;
     st->completer.tabState = tabState;
