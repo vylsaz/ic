@@ -3,6 +3,7 @@ nob
 *.exe
 *.dll
 *.def
+*.obj
 *.a
 *.o
 *.so

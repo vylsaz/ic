@@ -805,6 +805,101 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
     return true;
 }
 
+char const *myCompiler = NULL;
+
+char const *GetCompiler(void)
+{
+    if (myCompiler!=NULL) {
+        return myCompiler;
+    }
+    char *compiler = GetCC();
+    if (compiler!=NULL) {
+        return compiler;
+    }
+    Nob_Cmd test = {
+        .capacity = 1,
+        .count = 0,
+        .items = nob_temp_alloc(sizeof(char *) * 1),
+    };
+    nob_cc(&test);
+    return test.items[0];
+}
+
+enum CompilerType {
+    COMPILER_UNDECIDED,
+    CL_EXE,
+    OTHER_COMPILER,
+} compilerType = COMPILER_UNDECIDED;
+
+void SetCompilerType(void)
+{
+    char const *outRedirect = nob_temp_sprintf("%s/temp/_cc_out.txt", GetExePath());
+    char const *errRedirect = nob_temp_sprintf("%s/temp/_cc_err.txt", GetExePath());
+    Nob_Cmd cc = {0};
+    nob_da_append(&cc, GetCompiler());
+    nob_da_append(&cc, "--version");
+    Nob_Log_Level old = nob_minimal_log_level;
+    nob_minimal_log_level = NOB_NO_LOGS;
+    nob_cmd_run(&cc, .stdout_path=outRedirect, .stderr_path=errRedirect);
+    nob_minimal_log_level = old;
+    nob_da_free(cc);
+
+    StrBuilder sb = {0};
+    if (!nob_read_entire_file(errRedirect, &sb)) { return; }
+    if (nob_sv_starts_with(nob_sv_from_parts(sb.items, sb.count), 
+            nob_sv_from_cstr("Microsoft (R) C/C++ Optimizing Compiler"))) {
+        compilerType = CL_EXE;
+    } else {
+        compilerType = OTHER_COMPILER;
+    }
+    nob_sb_free(sb);
+}
+
+void CompilerSetup(Nob_Cmd *cc)
+{
+    if (compilerType==CL_EXE) {
+        nob_da_append(cc, "/nologo");
+        nob_da_append(cc, "/std:c17");
+    }
+}
+
+void TranslateWerror(Nob_Cmd *cc)
+{
+    if (compilerType==CL_EXE) {
+        nob_da_append(cc, "/WX");
+    } else  {
+        nob_da_append(cc, "-Werror");
+    }
+}
+
+void TranslateDllOutput(Nob_Cmd *cc, char const *outPath)
+{
+    if (compilerType==CL_EXE) {
+        nob_cmd_append(cc, "/LD", nob_temp_sprintf("/Fe:%s", outPath));
+    } else  {
+        nob_cmd_append(cc, "-shared", "-o", outPath);
+    }
+}
+
+bool TranslateCompile(Nob_Cmd *cc)
+{
+    Nob_Cmd_Opt ccOpt = {0};
+    if (compilerType==CL_EXE) {
+        ccOpt.stdout_path = nob_temp_sprintf("%s/temp/_cc_out.txt", GetExePath());
+    }
+    if (!nob_cmd_run_opt(cc, ccOpt)) {
+        if (compilerType==CL_EXE) {
+            StrBuilder ccErr = {0};
+            if (nob_read_entire_file(ccOpt.stdout_path, &ccErr)) {
+                nob_log(NOB_ERROR, "%s", ccErr.items);
+            }
+            nob_sb_free(ccErr);
+        }
+        return false;
+    }
+    return true;
+}
+
 typedef enum RunType {
     RT_MEM,
     RT_DLL,
@@ -848,28 +943,29 @@ int Run(RunType rt,
 
     if (rt==RT_CC) {
         Nob_Cmd cc = {0};
-        char *ccc;
+        // input file
         char const *inpPath = nob_temp_sprintf("%s/temp/_ic.c", exePath);
         nob_write_entire_file(inpPath, sbSrc.items, sbSrc.count);
 
-        ccc = GetCC();
-        if (ccc==NULL) {
-            nob_cc(&cc);
-        } else {
-            nob_cmd_append(&cc, ccc);
+        if (compilerType==COMPILER_UNDECIDED) {
+            SetCompilerType();
         }
+
+        nob_da_append(&cc, GetCompiler());
+        CompilerSetup(&cc);
         if (werror) {
-            nob_da_append(&cc, "-Werror");
+            TranslateWerror(&cc);
         }
         for (usz i = 0; i<opt->count; ++i) {
             nob_da_append(&cc, opt->items[i]);
         }
         nob_cc_inputs(&cc, inpPath);
-        nob_da_append(&cc, "-shared");
+        TranslateDllOutput(&cc, outPath);
         nob_da_append(&cc, nob_temp_sprintf("-I%s", exePath)); // for nob.h
-        nob_cc_output(&cc, outPath);
 
-        if (!nob_cmd_run(&cc)) goto end;
+        bool rslt = TranslateCompile(&cc);
+        nob_da_free(cc);
+        if (!rslt) goto end;
     } else {
         // prepare quoted options
         sbOpt.count = 0;
@@ -1149,7 +1245,7 @@ int main(int argc, char **argv)
     int ok, argStart = 0;
     usz line = 0;
     StrBuilder out = {0}, pre = {0}, first = {0}, 
-        src = {0}, last = {0}, temp = {0};
+        src = {0}, last = {0}, temp = {0}, tempCc = {0};
     Nob_Cmd opt = {0}, arg = {0};
     char const *tccPath = GetExePath();
     char const *incPath = nob_temp_sprintf("%s/include", tccPath);
@@ -1164,7 +1260,7 @@ int main(int argc, char **argv)
         char *a = argv[i];
         if (strcmp(a, "-h")==0 || strcmp(a, "--help")==0) {
             printf(
-                "Usage: %s [cc | dll] [compiler options...] [-- program argv...]\n"
+                "Usage: %s [dll | cc[=...]] [compiler options...] [-- program argv...]\n"
                 , argv[0]
             );
             return 0;
@@ -1174,6 +1270,11 @@ int main(int argc, char **argv)
             continue;
         }
         if (strcmp(a, "cc")==0) {
+            rt = RT_CC;
+            continue;
+        }
+        if (strncmp(a, "cc=", 3)==0) {
+            myCompiler = a+3;
             rt = RT_CC;
             continue;
         }
@@ -1307,13 +1408,29 @@ int main(int argc, char **argv)
                 switch (out.items[2]) {
                 default:
                 break; case 'c': rt = RT_CC;
+                    compilerType = COMPILER_UNDECIDED; // reset compiler type
+                    if (out.items[3]=='=') {
+                        if (out.items[4]=='\n') {
+                            myCompiler = NULL;
+                        } else {
+                            Nob_String_View sv = nob_sv_trim(
+                                nob_sv_from_parts(out.items+4, out.count-4));
+                            tempCc.count = 0;
+                            nob_sb_append_buf(&tempCc, sv.data, sv.count);
+                            nob_sb_append_null(&tempCc);
+                            myCompiler = tempCc.items;
+                        }
+                    }
                 break; case 'd': rt = RT_DLL;
                 break; case 'm': rt = RT_MEM;
                 }
-                printf("run type: %s\n",
+                printf("run type: %s, ",
                     rt==RT_CC? "cc":
                     rt==RT_DLL? "dll":
                     "mem");
+                printf("compiler: %s\n",
+                    rt==RT_CC? GetCompiler():
+                    "tcc");
             break; case 'w':
                 werror = true;
                 printf("warnings as errors: on\n");
