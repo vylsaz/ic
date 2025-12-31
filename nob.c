@@ -77,7 +77,7 @@ int main(int argc, char **argv)
 #endif
     if (!cmd_run(&cmd)) return 1;
 
-    if (!mkdir_if_not_exists("./temp")) return 1;
+    // if (!mkdir_if_not_exists("./temp")) return 1;
 
     return 0;
 }

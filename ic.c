@@ -29,6 +29,12 @@ char *GetExePath(void)
     return nob_temp_dir_name(nob_temp_running_executable_path());
 }
 
+char *GetTempDir(void)
+{
+    char const *exePath = GetExePath();
+    return nob_temp_sprintf("%s/temp", exePath);
+}
+
 char LastChar(StrBuilder *sb)
 {
     usz i;
@@ -825,6 +831,52 @@ char const *GetCompiler(void)
     return test.items[0];
 }
 
+char const *exePath;
+char const *tempDir;
+
+char const *tccPath;
+char const *incPath;
+char const *libPath;
+
+char const *outRedirect;
+char const *errRedirect;
+
+char const *rawOutPath;
+char const *outPath;
+
+char const *inpPath;
+
+void SetupPaths(void)
+{
+    exePath = GetExePath();
+    tempDir = GetTempDir();
+
+    // tcc paths
+    tccPath = GetExePath();
+    incPath = nob_temp_sprintf("%s/include", tccPath);
+    libPath = nob_temp_sprintf("%s/lib", tccPath);
+
+    // for compiler detection & cl.exe output redirection
+    outRedirect = nob_temp_sprintf("%s/_cc_out.txt", tempDir);
+    errRedirect = nob_temp_sprintf("%s/_cc_err.txt", tempDir);
+
+    // output path without extension for cl.exe
+    rawOutPath = nob_temp_sprintf("%s/ic", tempDir);
+
+    // output ic shared library
+    char const *ext = 
+#ifdef _WIN32
+    ".dll"
+#else
+    ".so"
+#endif
+    ;
+    outPath = nob_temp_sprintf("%s%s", rawOutPath, ext);
+
+    // input file for cc
+    inpPath = nob_temp_sprintf("%s/_ic.c", tempDir);
+}
+
 enum CompilerType {
     COMPILER_UNDECIDED,
     CL_EXE,
@@ -833,8 +885,6 @@ enum CompilerType {
 
 void SetCompilerType(void)
 {
-    char const *outRedirect = nob_temp_sprintf("%s/temp/_cc_out.txt", GetExePath());
-    char const *errRedirect = nob_temp_sprintf("%s/temp/_cc_err.txt", GetExePath());
     Nob_Cmd cc = {0};
     nob_da_append(&cc, GetCompiler());
     nob_da_append(&cc, "--version");
@@ -875,11 +925,9 @@ void TranslateWerror(Nob_Cmd *cc)
 void TranslateDllOutput(Nob_Cmd *cc, char const *outPath)
 {
     if (compilerType==CL_EXE) {
-        char const *out = nob_temp_strndup(outPath,
-            strlen(outPath)-strlen(nob_temp_file_ext(outPath)));
         nob_cmd_append(cc, "/LD",
-            nob_temp_sprintf("/Fo:%s", out),
-            nob_temp_sprintf("/Fe:%s", out));
+            nob_temp_sprintf("/Fo:%s", rawOutPath),
+            nob_temp_sprintf("/Fe:%s", rawOutPath));
     } else  {
         nob_cmd_append(cc, "-shared", "-o", outPath);
     }
@@ -889,12 +937,15 @@ bool TranslateCompile(Nob_Cmd *cc)
 {
     Nob_Cmd_Opt ccOpt = {0};
     if (compilerType==CL_EXE) {
-        ccOpt.stdout_path = nob_temp_sprintf("%s/temp/_cc_out.txt", GetExePath());
+        ccOpt.stdout_path = outRedirect;
     }
     if (!nob_cmd_run_opt(cc, ccOpt)) {
         if (compilerType==CL_EXE) {
             StrBuilder ccErr = {0};
             if (nob_read_entire_file(ccOpt.stdout_path, &ccErr)) {
+                if (nob_da_last(&ccErr)=='\n') ccErr.count -= 1;
+                if (nob_da_last(&ccErr)=='\r') ccErr.count -= 1;
+                nob_sb_append_null(&ccErr);
                 nob_log(NOB_ERROR, "%s", ccErr.items);
             }
             nob_sb_free(ccErr);
@@ -910,8 +961,7 @@ typedef enum RunType {
     RT_CC,
 } RunType;
 
-int Run(RunType rt,
-    char const *tccPath, char const *incPath, char const *libPath, usz line,
+int Run(RunType rt, usz line,
     Nob_Cmd *opt, Nob_Cmd *arg, 
     StrBuilder *pre, StrBuilder *first,
     StrBuilder *src, StrBuilder *last,
@@ -925,13 +975,10 @@ int Run(RunType rt,
     usz i, mark = nob_temp_save();
     int myArgsLen = 1+arg->count;
     char **myArgs = nob_temp_alloc((myArgsLen)*sizeof(char *));
-    char const *exePath = GetExePath();
 #ifdef _WIN32
     HMODULE h = NULL;
-    char const *outPath = nob_temp_sprintf("%s/temp/ic.dll", exePath);
 #else
     void *h = NULL;
-    char const *outPath = nob_temp_sprintf("%s/temp/ic.so", exePath);
 #endif
 
     // args to main
@@ -947,9 +994,8 @@ int Run(RunType rt,
 
     if (rt==RT_CC) {
         Nob_Cmd cc = {0};
-        // input file
-        char const *inpPath = nob_temp_sprintf("%s/temp/_ic.c", exePath);
-        nob_write_entire_file(inpPath, sbSrc.items, sbSrc.count);
+        // write to inpPath
+        if (!nob_write_entire_file(inpPath, sbSrc.items, sbSrc.count)) goto end;
 
         if (compilerType==COMPILER_UNDECIDED) {
             SetCompilerType();
@@ -1251,11 +1297,11 @@ int main(int argc, char **argv)
     StrBuilder out = {0}, pre = {0}, first = {0}, 
         src = {0}, last = {0}, temp = {0}, tempCc = {0};
     Nob_Cmd opt = {0}, arg = {0};
-    char const *tccPath = GetExePath();
-    char const *incPath = nob_temp_sprintf("%s/include", tccPath);
-    char const *libPath = nob_temp_sprintf("%s/lib", tccPath);
     RunType rt = RT_MEM;
     bool werror = true;
+
+    SetupPaths();
+    if (!nob_mkdir_if_not_exists(tempDir)) return 1;
 
     mlSetCompletionMode(mlCompleteMode_Circular);
     mlSetCompletionCallback(CompleteFunc, NULL);
@@ -1461,8 +1507,7 @@ int main(int argc, char **argv)
                 nob_sb_append_buf(&first, out.items, out.count);
             }
         run_label:
-            ok = Run(rt,
-                tccPath, incPath, libPath, line,
+            ok = Run(rt, line,
                 &opt, &arg,
                 &pre, &first,
                 &src, &last,
