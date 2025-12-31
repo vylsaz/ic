@@ -875,7 +875,11 @@ void TranslateWerror(Nob_Cmd *cc)
 void TranslateDllOutput(Nob_Cmd *cc, char const *outPath)
 {
     if (compilerType==CL_EXE) {
-        nob_cmd_append(cc, "/LD", nob_temp_sprintf("/Fe:%s", outPath));
+        char const *out = nob_temp_strndup(outPath,
+            strlen(outPath)-strlen(nob_temp_file_ext(outPath)));
+        nob_cmd_append(cc, "/LD",
+            nob_temp_sprintf("/Fo:%s", out),
+            nob_temp_sprintf("/Fe:%s", out));
     } else  {
         nob_cmd_append(cc, "-shared", "-o", outPath);
     }
