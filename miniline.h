@@ -58,6 +58,7 @@ MINILINE_API void mlSetCompletionMode(enum mlCompleteMode mode);
 #include <termios.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <limits.h>
 #endif
 
 #define ML_ESC "\x1b"
