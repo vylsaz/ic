@@ -50,6 +50,10 @@ MINILINE_API void mlSetCompletionMode(enum mlCompleteMode mode);
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
+#   if defined(_MSC_VER) && !defined(__clang__)
+    typedef long long ssize_t;
+#       define strdup _strdup
+#   endif
 #else
 #include <termios.h>
 #include <unistd.h>
@@ -172,7 +176,7 @@ enum mlKeySpecial {
         memcpy((da)->els+(da)->len, (new_els), (n)*sizeof(*(da)->els)); \
         (da)->len += n; \
     } while (0)
-#define mlDaLast(da) (da)->els[assert((da)->len>0 && "empty array"), (da)->len-1]
+#define mlDaLast(da) (da)->els[(assert((da)->len>0 && "empty array"), (da)->len-1)]
 #define mlDaFree(da) free((da).els)
 
 
@@ -545,7 +549,7 @@ static void mlObWrite(mlOutputBuilder *ob)
 {
 #ifdef _WIN32
     DWORD written;
-    assert(WriteConsoleW(st->out, ob->els, ob->len, &written, NULL));
+    assert(WriteConsoleW(st->out, ob->els, (DWORD)ob->len, &written, NULL));
 #else
     assert(write(st->ofd, ob->els, ob->len)!=-1);
 #endif
@@ -612,8 +616,10 @@ static void mlEditBufFromCstr(mlEditBuf *eb, char const *cstr)
     };
     mlCodePointsFromCstr(&cps, cstr);
     eb->els = cps.els;
-    eb->len = cps.len;
-    eb->cap = cps.cap;
+    assert(cps.len <= INT_MAX);
+    eb->len = (int)cps.len;
+    assert(cps.cap <= INT_MAX);
+    eb->cap = (int)cps.cap;
 }
 
 static char *mlStrFromEditBuf(mlEditBuf *eb)
@@ -785,8 +791,9 @@ static void mlEditInsertCompletion(mlEditBuf *eb, char const *completion, int st
 
     mlCodePoints comp = {0};
     mlCodePointsFromCstr(&comp, completion);
-    int newPos = ebStart + comp.len;
-    int newLen = eb->len - replaceLen + comp.len;
+    assert(comp.len <= INT_MAX);
+    int newPos = ebStart + (int)comp.len;
+    int newLen = eb->len - replaceLen + (int)comp.len;
     mlDaReserve(eb, newLen, ML_DA_DEFAULT_CAP);
     memmove(&eb->els[newPos], &eb->els[eb->pos], dif*sizeof(int));
     memcpy(&eb->els[ebStart], comp.els, comp.len*sizeof(int));
@@ -951,9 +958,9 @@ static void mlBeep(void) {
 
 static void mlLongestCommonPrefixInput(mlStrBuilder *sb, char *input)
 {
-    int n = strlen(input), m = sb->len;
+    size_t n = strlen(input), m = sb->len;
     if (n < m) m = n;
-    int i;
+    size_t i;
     for (i = 0; i < m; ++i) {
         if (sb->els[i] != input[i]) { break; }
     }
@@ -1200,7 +1207,7 @@ char *mlReadLineNoTTY(char const *prompt)
                 return out.els;
             }
         } else {
-            mlDaAppend(&out, c);
+            mlDaAppend(&out, (char)c);
         }
     }
 }
@@ -1364,7 +1371,8 @@ int mlHistoryLoad(mlHistory *history, char const *path)
         free(cstr);
 
         if (lineLen > 0) {
-            mlHistoryPush(history, cps.els, cps.len);
+            assert(cps.len <= INT_MAX);
+            mlHistoryPush(history, cps.els, (int)cps.len);
         }
         if (pos < sb.len && sb.els[pos] == '\n') {
             pos++;

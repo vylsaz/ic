@@ -922,7 +922,7 @@ void TranslateWerror(Nob_Cmd *cc)
     }
 }
 
-void TranslateDllOutput(Nob_Cmd *cc, char const *outPath)
+void TranslateDllOutput(Nob_Cmd *cc)
 {
     if (compilerType==CL_EXE) {
         nob_cmd_append(cc, "/LD",
@@ -973,7 +973,7 @@ int Run(RunType rt, usz line,
     static StrBuilder sbSrc = {0}, sbOpt = {0};
     int r = -1;
     usz i, mark = nob_temp_save();
-    int myArgsLen = 1+arg->count;
+    int myArgsLen = 1+(int)arg->count; assert(arg->count<INT32_MAX);
     char **myArgs = nob_temp_alloc((myArgsLen)*sizeof(char *));
 #ifdef _WIN32
     HMODULE h = NULL;
@@ -1010,7 +1010,7 @@ int Run(RunType rt, usz line,
             nob_da_append(&cc, opt->items[i]);
         }
         nob_cc_inputs(&cc, inpPath);
-        TranslateDllOutput(&cc, outPath);
+        TranslateDllOutput(&cc);
         nob_da_append(&cc, nob_temp_sprintf("-I%s", exePath)); // for nob.h
 
         bool rslt = TranslateCompile(&cc);
