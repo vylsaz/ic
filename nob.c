@@ -14,10 +14,32 @@
 #   endif
 #endif
 
+void download_file(char const *url, char const *out_path)
+{
+    Nob_Cmd cmd = {0};
+#ifdef _WIN32
+    cmd_append(&cmd, "Powershell.exe", "-Command",
+        nob_temp_sprintf("Invoke-WebRequest \"%s\" -OutFile '%s'", url, out_path));
+#else
+    cmd_append(&cmd, "curl", "-L", "-o", out_path, url);
+#endif
+    if (!cmd_run(&cmd)) {
+        nob_log(NOB_ERROR, "Failed to download %s", url);
+    }
+
+    da_free(cmd);
+}
 
 int main(int argc, char **argv)
 {
-    NOB_GO_REBUILD_URSELF(argc, argv);
+    if (argc == 2 && strcmp(argv[1], "update-nob") == 0) {
+        download_file(
+            "https://raw.githubusercontent.com/tsoding/nob.h/main/nob.h",
+            "./nob.h");
+        argc -= 1;
+    }
+
+    GO_REBUILD_URSELF_PLUS(argc, argv, "./nob.h");
 
     Cmd cmd = {0};
 
@@ -59,22 +81,15 @@ int main(int argc, char **argv)
         #endif
     }
 
-    #ifdef _WIN32
-    #define OUTPUT "ic.exe"
-    #else
-    #define OUTPUT "ic"
-    #endif
-
     nob_cc(&cmd);
     nob_cc_flags(&cmd);
-    nob_cc_output(&cmd, OUTPUT);
+    nob_cc_output(&cmd, "ic");
     nob_cc_inputs(&cmd, "./ic.c");
-    cmd_append(&cmd, "-L.");
-    cmd_append(&cmd, "-ltcc");
-    cmd_append(&cmd, "-lm");
+    cmd_append(&cmd, "-L.", "-ltcc", "-lm");
 #ifdef __ANDROID__
     cmd_append(&cmd, temp_sprintf("-Wl,-R%s", get_current_dir_temp()));
 #endif
+
     if (!cmd_run(&cmd)) return 1;
 
     // if (!mkdir_if_not_exists("./temp")) return 1;
