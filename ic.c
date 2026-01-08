@@ -665,11 +665,7 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         "#include <inttypes.h>\n"
         "#include <float.h>\n"
         "#include <wchar.h>\n"
-    #if defined(_WIN32)
-        "#ifdef __TINYC__\n"
-        "#define _ftelli64(stream) (_telli64(_fileno(stream)))\n"
-        "#endif\n"
-    #endif
+        // nob helpers
         "#define NOB_REBUILD_URSELF\n"
         "#define NOB_IMPLEMENTATION\n"
     ;
