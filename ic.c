@@ -1031,17 +1031,9 @@ bool FindDllExports(char const *dll, struct MyListOfStrings *func_names)
     #undef RVAtoPtr
 }
 
-struct MyHMODULEs {
-    HMODULE *items;
-    usz count;
-    usz capacity;
-};
-
-bool WinImportDlls(TCCState *s, Nob_Cmd *opt, struct MyHMODULEs *hs)
+bool WinSearchDlls(Nob_Cmd *opt, struct MyListOfStrings *full_dlls)
 {
-    static struct MyListOfStrings search_paths = {0},
-        dlls = {0}, full_dlls = {0}, func_names = {0};
-
+    static struct MyListOfStrings search_paths = {0}, dlls = {0};
     static char const dash_L[] = "-L";
     size_t const dash_L_len = sizeof(dash_L)-1;
     static char const dash_l[] = "-l";
@@ -1080,7 +1072,7 @@ bool WinImportDlls(TCCState *s, Nob_Cmd *opt, struct MyHMODULEs *hs)
     // nob_da_append(&search_paths, exePath);
     nob_da_append(&search_paths, nob_temp_sprintf("%s\\system32", GetEnvTemp("SystemRoot")));
 
-    full_dlls.count = 0;
+    full_dlls->count = 0;
 
     for (usz i = 0; i<dlls.count; ++i) {
         char const *dll_name = dlls.items[i];
@@ -1089,7 +1081,7 @@ bool WinImportDlls(TCCState *s, Nob_Cmd *opt, struct MyHMODULEs *hs)
             char const *dir = search_paths.items[j];
             char *full_path = nob_temp_sprintf("%s/%s", dir, dll_name);
             if (nob_file_exists(full_path)) {
-                nob_da_append(&full_dlls, full_path);
+                nob_da_append(full_dlls, full_path);
                 found = true;
                 break;
             }
@@ -1099,13 +1091,19 @@ bool WinImportDlls(TCCState *s, Nob_Cmd *opt, struct MyHMODULEs *hs)
         }
     }
 
-    for (usz i = 0; i<full_dlls.count; ++i) {
-        char const *dll = full_dlls.items[i];
-        func_names.count = 0;
-        if (!FindDllExports(dll, &func_names)) {
-            nob_log(NOB_ERROR, "failed to read exports from '%s'", dll);
-            return false;
-        }
+    return true;
+}
+
+struct MyHMODULEs {
+    HMODULE *items;
+    usz count;
+    usz capacity;
+};
+
+bool WinLoadDlls(struct MyListOfStrings *full_dlls, struct MyHMODULEs *hs)
+{
+    for (usz i = 0; i<full_dlls->count; ++i) {
+        char const *dll = full_dlls->items[i];
 
         HMODULE module = LoadLibraryA(dll);
         if (module==NULL) {
@@ -1113,6 +1111,23 @@ bool WinImportDlls(TCCState *s, Nob_Cmd *opt, struct MyHMODULEs *hs)
             return false;
         }
         nob_da_append(hs, module);
+    }
+    return true;
+}
+
+bool WinImportDlls(TCCState *s, struct MyListOfStrings *full_dlls, struct MyHMODULEs *hs)
+{
+    static struct MyListOfStrings func_names = {0};
+
+    for (usz i = 0; i<full_dlls->count; ++i) {
+        char const *dll = full_dlls->items[i];
+        func_names.count = 0;
+        if (!FindDllExports(dll, &func_names)) {
+            nob_log(NOB_ERROR, "failed to read exports from '%s'", dll);
+            return false;
+        }
+
+        HMODULE module = hs->items[i];
         for (usz j = 0; j<func_names.count; ++j) {
             char const *func_name = func_names.items[j];
             FARPROC f = GetProcAddress(module, func_name);
@@ -1152,6 +1167,7 @@ int Run(RunType rt, usz line,
 #ifdef _WIN32
     HMODULE h = NULL;
     struct MyHMODULEs loadedDlls = {0};
+    struct MyListOfStrings full_dlls = {0};
 #else
     void *h = NULL;
 #endif
@@ -1212,9 +1228,13 @@ int Run(RunType rt, usz line,
     #endif
         tcc_add_include_path(s, exePath); // for nob.h
 
+    #ifdef _WIN32
         if (rt==RT_MEM) {
-            if (!WinImportDlls(s, opt, &loadedDlls)) goto end;
+            if (!WinSearchDlls(opt, &full_dlls)) goto end;
+            if (!WinLoadDlls(&full_dlls, &loadedDlls)) goto end;
+            if (!WinImportDlls(s, &full_dlls, &loadedDlls)) goto end;
         }
+    #endif
 
         r = tcc_compile_string(s, sbSrc.items);
         if (r==-1) goto end;
@@ -1260,6 +1280,7 @@ end:
         FreeLibrary(loadedDlls.items[i]);
     }
     nob_da_free(loadedDlls);
+    nob_da_free(full_dlls);
 #endif
     if (s!=NULL) tcc_delete(s);
     nob_temp_rewind(mark);
