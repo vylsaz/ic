@@ -951,6 +951,184 @@ bool TranslateCompile(Nob_Cmd *cc)
     return true;
 }
 
+#ifdef _WIN32
+
+IMAGE_SECTION_HEADER *FindSectionByRVA(
+    IMAGE_SECTION_HEADER *sections, WORD num_sections, DWORD rva) {
+    for (WORD i = 0; i < num_sections; ++i) {
+        IMAGE_SECTION_HEADER section_header = sections[i];
+        if ((section_header.VirtualAddress <= rva) && 
+            (rva < (section_header.VirtualAddress + section_header.SizeOfRawData))) {
+            return &sections[i];
+        }
+    }
+    return NULL;
+}
+
+struct MyListOfStrings {
+    char const **items;
+    usz count;
+    usz capacity;
+};
+
+// temp
+bool FindDllExports(char const *dll, struct MyListOfStrings *func_names)
+{
+    Nob_String_Builder sb = {0};
+    nob_read_entire_file(dll, &sb);
+    
+    char const *data_base = sb.items;
+    
+    IMAGE_DOS_HEADER *dos_header = (IMAGE_DOS_HEADER *)data_base;
+    if (dos_header->e_magic != IMAGE_DOS_SIGNATURE) {
+        return false;
+    }
+
+    IMAGE_NT_HEADERS *nt_headers = (IMAGE_NT_HEADERS *)(data_base + dos_header->e_lfanew);
+    if (nt_headers->Signature != IMAGE_NT_SIGNATURE) {
+        return false;
+    }
+
+    IMAGE_FILE_HEADER file_header = nt_headers->FileHeader;
+
+    IMAGE_OPTIONAL_HEADER optional_header = nt_headers->OptionalHeader;
+
+    IMAGE_DATA_DIRECTORY export_directory = optional_header.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    DWORD export_rva = export_directory.VirtualAddress;
+    // DWORD export_size = export_directory.Size;
+
+    WORD num_sections = file_header.NumberOfSections;
+    IMAGE_SECTION_HEADER *sections = malloc(sizeof(IMAGE_SECTION_HEADER) * num_sections);
+    memcpy(sections, 
+        data_base + dos_header->e_lfanew + sizeof(IMAGE_NT_HEADERS), 
+        sizeof(IMAGE_SECTION_HEADER) * num_sections
+    );
+
+    // static char const export_sig[6] = {'.','e','d','a','t','a'};
+
+    #define RVAtoPtr(ptr, rva) do { \
+        IMAGE_SECTION_HEADER *section = FindSectionByRVA(sections, num_sections, (rva)); \
+        assert(section != NULL); \
+        (ptr) = (void *)(data_base+(uintptr_t)(section->PointerToRawData+((rva)-section->VirtualAddress))); \
+    } while(0)
+
+    IMAGE_EXPORT_DIRECTORY *exports;
+    RVAtoPtr(exports, export_rva);
+
+    DWORD num_name_rvas = exports->NumberOfNames;
+    DWORD *name_rvas;
+    RVAtoPtr(name_rvas, exports->AddressOfNames);
+    for (DWORD i = 0; i < num_name_rvas; ++i) {
+        char const *func_name;
+        RVAtoPtr(func_name, name_rvas[i]);
+        nob_da_append(func_names, nob_temp_strdup(func_name));
+    }
+
+    free(sections);
+    nob_sb_free(sb);
+    return true;
+
+    #undef RVAtoPtr
+}
+
+struct MyHMODULEs {
+    HMODULE *items;
+    usz count;
+    usz capacity;
+};
+
+bool WinImportDlls(TCCState *s, Nob_Cmd *opt, struct MyHMODULEs *hs)
+{
+    static struct MyListOfStrings search_paths = {0},
+        dlls = {0}, full_dlls = {0}, func_names = {0};
+
+    static char const dash_L[] = "-L";
+    size_t const dash_L_len = sizeof(dash_L)-1;
+    static char const dash_l[] = "-l";
+    size_t const dash_l_len = sizeof(dash_l)-1;
+    static char const dash_l_colon[] = "-l:";
+    size_t const dash_l_colon_len = sizeof(dash_l_colon)-1;
+
+    search_paths.count = 0;
+    dlls.count = 0;
+
+    for (usz i = 0; i<opt->count; ++i) {
+        if (strcmp(opt->items[i], dash_L)==0 && i+1<opt->count) {
+            ++i;
+            nob_da_append(&search_paths, opt->items[i]);
+        } else if (strncmp(opt->items[i], dash_L, dash_L_len)==0) {
+            nob_da_append(&search_paths, opt->items[i]+dash_L_len);
+        } else if (strncmp(opt->items[i], dash_l_colon, dash_l_colon_len)==0) {
+            char const *dll = opt->items[i]+dash_l_colon_len;
+            if (dll[0]=='\0') {
+                nob_log(NOB_ERROR, "invalid -l: option");
+                return false;
+            } else {
+                // use as is
+                nob_da_append(&dlls, dll);
+            }
+        } else if (strcmp(opt->items[i], dash_l)==0 && i+1<opt->count) {
+            ++i;
+            char const *dll = nob_temp_sprintf("%s.dll", opt->items[i]);
+            nob_da_append(&dlls, dll);
+        } else if (strncmp(opt->items[i], dash_l, dash_l_len)==0) {
+            char const *dll = nob_temp_sprintf("%s.dll", opt->items[i]+dash_l_len);
+            nob_da_append(&dlls, dll);
+        }
+    }
+
+    // nob_da_append(&search_paths, exePath);
+    nob_da_append(&search_paths, nob_temp_sprintf("%s\\system32", GetEnvTemp("SystemRoot")));
+
+    full_dlls.count = 0;
+
+    for (usz i = 0; i<dlls.count; ++i) {
+        char const *dll_name = dlls.items[i];
+        bool found = false;
+        for (usz j = 0; j<search_paths.count; ++j) {
+            char const *dir = search_paths.items[j];
+            char *full_path = nob_temp_sprintf("%s/%s", dir, dll_name);
+            if (nob_file_exists(full_path)) {
+                nob_da_append(&full_dlls, full_path);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            nob_log(NOB_WARNING, "could not find DLL '%s'", dll_name);
+        }
+    }
+
+    for (usz i = 0; i<full_dlls.count; ++i) {
+        char const *dll = full_dlls.items[i];
+        func_names.count = 0;
+        if (!FindDllExports(dll, &func_names)) {
+            nob_log(NOB_ERROR, "failed to read exports from '%s'", dll);
+            return false;
+        }
+
+        HMODULE module = LoadLibraryA(dll);
+        if (module==NULL) {
+            nob_log(NOB_ERROR, "failed to load DLL '%s'", dll);
+            return false;
+        }
+        nob_da_append(hs, module);
+        for (usz j = 0; j<func_names.count; ++j) {
+            char const *func_name = func_names.items[j];
+            FARPROC f = GetProcAddress(module, func_name);
+            if (f==NULL) {
+                nob_log(NOB_ERROR, "failed to import '%s' from '%s'", func_name, dll);
+                return false;
+            }
+            tcc_add_symbol(s, func_name, f);
+        }
+    }
+
+    return true;
+}
+
+#endif
+
 typedef enum RunType {
     RT_MEM,
     RT_DLL,
@@ -973,6 +1151,7 @@ int Run(RunType rt, usz line,
     char **myArgs = nob_temp_alloc((myArgsLen)*sizeof(char *));
 #ifdef _WIN32
     HMODULE h = NULL;
+    struct MyHMODULEs loadedDlls = {0};
 #else
     void *h = NULL;
 #endif
@@ -1032,6 +1211,11 @@ int Run(RunType rt, usz line,
         tcc_add_library_path(s, tccPath);
     #endif
         tcc_add_include_path(s, exePath); // for nob.h
+
+        if (rt==RT_MEM) {
+            if (!WinImportDlls(s, opt, &loadedDlls)) goto end;
+        }
+
         r = tcc_compile_string(s, sbSrc.items);
         if (r==-1) goto end;
     }
@@ -1059,7 +1243,7 @@ int Run(RunType rt, usz line,
     if (ic_main!=NULL) {
         r = ic_main(myArgsLen, myArgs);
     } else {
-        nob_log(NOB_ERROR, "%s\n", "failed to get compiled function");
+        nob_log(NOB_ERROR, "%s", "failed to get compiled function");
         r = -1;
     }
 
@@ -1071,6 +1255,12 @@ end:
         dlclose(h);
     #endif
     }
+#ifdef _WIN32
+    for (usz i = 0; i<loadedDlls.count; ++i) {
+        FreeLibrary(loadedDlls.items[i]);
+    }
+    nob_da_free(loadedDlls);
+#endif
     if (s!=NULL) tcc_delete(s);
     nob_temp_rewind(mark);
 
