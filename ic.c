@@ -627,6 +627,7 @@ bool Embed(StrBuilder *res, StrBuilder *in)
     return true;
 }
 
+// assume two's complement
 #define BIN_FUNCTION(BITS) \
     "char *__bin"#BITS"(int"#BITS"_t x) {"\
         "static char b["#BITS"+"#BITS"/4] = {0};"\
@@ -673,8 +674,13 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
     static char prolog[] = 
         "#line 1 \"nowhere\"\n"
         BIN_FUNCTION(8) BIN_FUNCTION(16) BIN_FUNCTION(32) BIN_FUNCTION(64)
+        "char *__binfloat32(float x) {"
+            "union {uint32_t u; float f;} v; v.f = x; return __bin32(v.u);}\n"
+        "char *__binfloat64(double x) {"
+            "union {uint64_t u; double f;} v; v.f = x; return __bin64(v.u);}\n"
         "#define BIN(X) _Generic((X),"
-            GEN_BIN(8) GEN_BIN(16) GEN_BIN(32) GEN_BIN(64) "default:__bin64)(X)\n"
+            GEN_BIN(8) GEN_BIN(16) GEN_BIN(32) GEN_BIN(64) 
+            "float:__binfloat32,double:__binfloat64,default:__bin64)(X)\n"
         "#define __IC_STRINGIFY1(...) #__VA_ARGS__\n"
         "#define __IC_STRINGIFY(...) __IC_STRINGIFY1(__VA_ARGS__)\n"
         "#define ONCE_LINE (__LINE__>LASTLINE)\n"
