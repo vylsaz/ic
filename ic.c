@@ -460,21 +460,64 @@ void Ls(Nob_Cmd *cmd)
     nob_da_free(entries);
 }
 
+bool SetEnvTemp(char const *name, char const *value);
+char *GetEnvTemp(char const *name);
+
+#ifdef _WIN32
+#define MY_PATH_SEP ";"
+#else
+#define MY_PATH_SEP ":"
+#endif
+
+void PathPrepend(char const *newPath)
+{
+    char *oldPath = GetEnvTemp("PATH");
+    if (oldPath==NULL) {
+        nob_log(NOB_ERROR, "path: could not get PATH environment variable");
+        return;
+    }
+    char *combined = nob_temp_sprintf("%s" MY_PATH_SEP "%s", newPath, oldPath);
+    if (!SetEnvTemp("PATH", combined)) {
+        nob_log(NOB_ERROR, "path: could not set PATH environment variable");
+        return;
+    }
+    printf("New PATH:\n%s\n", GetEnvTemp("PATH"));
+}
+
+void PathCmd(Nob_Cmd *cmd)
+{
+    if (cmd->count==1) {
+        printf("PATH:\n%s\n", GetEnvTemp("PATH"));
+    } else if (cmd->count==3 && strcmp(cmd->items[1], "+=")==0) {
+        PathPrepend(cmd->items[2]);
+    } else if (cmd->count==3 && strcmp(cmd->items[1], "=")==0) {
+        if (!SetEnvTemp("PATH", cmd->items[2])) {
+            nob_log(NOB_ERROR, "path: could not set PATH environment variable");
+            return;
+        }
+        printf("New PATH:\n%s\n", GetEnvTemp("PATH"));
+    } else {
+        nob_log(NOB_ERROR, "path: invalid arguments");
+    }
+}
+
 void ShellHelp(void)
 {
     printf("%s",
         "Built-in shell commands:\n"
-        "  pwd          Print current directory\n"
-        "  cd [dir]     Change current directory to 'dir'\n"
-        "               or print current directory\n"
-        "  dirs         Print directory stack\n"
-        "  pushd [dir]  Push current directory to stack and change to 'dir'\n"
-        "               or swap current directory with top of stack\n"
-        "  popd         Pop directory from stack and change to it\n"
-        "  ls [dir]     (Windows only) List contents of 'dir'\n"
-        "               or current directory\n"
-        "Others:        Call the executable with arguments\n"
-        "               e.g. > vim file.c\n"
+        "  pwd              Print current directory\n"
+        "  cd [dir]         Change current directory to 'dir'\n"
+        "                   or print current directory\n"
+        "  dirs             Print directory stack\n"
+        "  pushd [dir]      Push current directory to stack and change to 'dir'\n"
+        "                   or swap current directory with top of stack\n"
+        "  popd             Pop directory from stack and change to it\n"
+        "  ls [dir]         (Windows only) List contents of 'dir'\n"
+        "                   or current directory\n"
+        "  path [=/+= dir]  Print or modify PATH environment variable\n"
+        "                   += prepends 'dir' to PATH\n"
+        "Others:            Call the executable with arguments\n"
+        "                   e.g. > vim file.c\n"
     );
 }
 
@@ -495,6 +538,8 @@ void SpawnShell(char const *sh, usz len)
         Pushd(&cmd);
     } else if (strcmp(cmd.items[0], "popd")==0) {
         Popd();
+    } else if (strcmp(cmd.items[0], "path")==0) {
+        PathCmd(&cmd);
 #ifdef _WIN32
     } else if (strcmp(cmd.items[0], "ls")==0) {
         Ls(&cmd);
@@ -527,6 +572,17 @@ char *CstrFromWstr(WCHAR const *wstr)
 }
 
 #endif
+
+bool SetEnvTemp(char const *name, char const *value)
+{
+#ifdef _WIN32
+    WCHAR *wname = WstrFromCstr(name);
+    WCHAR *wvalue = WstrFromCstr(value);
+    return SetEnvironmentVariableW(wname, wvalue);
+#else
+    return 0==setenv(name, value, 1);
+#endif
+}
 
 char *GetEnvTemp(char const *name)
 {
