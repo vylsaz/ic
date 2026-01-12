@@ -756,9 +756,14 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
                 "float:__printf32,double:__printf64,long double:__printld,"
                 "bool:__printb,char:__printc,"
                 "char*:__prints,char const*:__printcs,"
-                "wchar_t*:__printws,wchar_t const*:__printwcs,"
                 "default:__printp)(X);"
         "} while (0)\n"
+        "#define WPRINT(X) "
+        "do {"
+            "if (__LINE__>LASTLINE) _Generic((X),"
+            "wchar_t*:__printws,wchar_t const*:__printwcs,"
+            "wchar_t:__printwc,default:__printp)(X);"
+        "} while(0)\n"
         "void __printi8(int8_t x) {"
             "printf(\"(int8_t) %\"PRId8\" = 0x%02\"PRIX8\"\\n\",x,(uint8_t)x);}\n"
         "void __printi16(int16_t x) {"
@@ -821,6 +826,7 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
             "puts(\"\");}\n"
         "void __prints(char *x) {printf(\"%s\\n\",x);}\n"
         "void __printcs(char const*x) {printf(\"%s\\n\",x);}\n"
+        "void __printwc(wchar_t x) {printf(\"%lc\\n\",x);}\n"
         "void __printws(wchar_t *x) {printf(\"%ls\\n\",x);}\n"
         "void __printwcs(wchar_t const*x) {printf(\"%ls\\n\",x);}\n"
         "void __printp(void *x) {printf(\""PTR_FMT"\\n\",x);}\n"
@@ -1436,6 +1442,7 @@ void Help(void)
         "  ONCE_LINE  -- true only the first time on the line\n"
         "  ONCE       -- execute the following statement only once\n"
         "  PRINT(X)   -- print the value of X\n"
+        "  WPRINT(X)  -- print the value of X (wchar_t related)\n"
         "  BIN(X)     -- get binary representation of integer X\n"
     );
 }
@@ -1491,7 +1498,7 @@ void CompleteFunc(char const *buf, int cursorPos, mlCompletions *comp, void *use
         // others
         "sizeof", "alignof", "alignas",
         // defined by me
-        "PRINT", "BIN",
+        "PRINT", "BIN", "WPRINT",
     };
 
     static char const *const constLike[] = {
