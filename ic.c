@@ -35,23 +35,23 @@ char *GetTempDir(void)
     return nob_temp_sprintf("%s/temp", exePath);
 }
 
-char LastChar(StrBuilder *sb)
+char LastChar(char const *items, usz count)
 {
     usz i;
-    for (i = 0; i<sb->count; ++i) {
-        char c = sb->items[sb->count-i-1];
+    for (i = 0; i<count; ++i) {
+        char c = items[count-i-1];
 
         if (c=='/' &&
-            i+1<sb->count && sb->items[sb->count-i-2]=='*') {
+            i+1<count && items[count-i-2]=='*') {
             usz j;
-            for (j = i+2; j<sb->count; ++j) {
-                if (sb->items[sb->count-j-1]=='*' &&
-                    j+1<sb->count && sb->items[sb->count-j-2]=='/') {
+            for (j = i+2; j<count; ++j) {
+                if (items[count-j-1]=='*' &&
+                    j+1<count && items[count-j-2]=='/') {
                     i = j+1;
                     break;
                 }
             }
-        } else if (c!=' ' && c!='\n' && c!='\t') {
+        } else if (!isspace(c)) {
             return c;
         }
     }
@@ -87,6 +87,13 @@ enum CompleteResult IsComplete(StrBuilder *sb)
         usz count;
         usz capacity;
     } stack = {0};
+    struct BracesPosStack {
+        usz *items;
+        usz count;
+        usz capacity;
+    } stackPos = {0};
+    usz lastPos = 0;
+    bool isLastCurly = false;
 
     usz i;
     for (i = 0; i<sb->count-1; ++i) {
@@ -104,14 +111,34 @@ enum CompleteResult IsComplete(StrBuilder *sb)
             continue;
         }
         if (blCom) {
-            if (c=='*' && i+1<sb->count && sb->items[i+1]=='/') {
+            if (c=='*' && i+1<sb->count-1 && sb->items[i+1]=='/') {
+                i += 1;
+                while (i+1<sb->count-1 && isspace(sb->items[i+1])) {
+                    i += 1;
+                }
+                if (i+1>=sb->count-1) break;
                 blCom = 0;
             }
             continue;
         }
+        if (c=='/') {
+            if (i+1<sb->count) {
+                char nc = sb->items[i+1];
+                if (nc=='/') {
+                    lnCom = 1;
+                    continue;
+                } else if (nc=='*') {
+                    blCom = 1;
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        isLastCurly = false;
         if (c=='(' || c=='[' || c=='{') {
             enum Braces lef = braceFromChar[(int)c];
             nob_da_append(&stack, lef);
+            nob_da_append(&stackPos, i);
         } else if (c==')' || c==']' || c=='}') {
             enum Braces rig = braceFromChar[(int)c];
             enum Braces lef = NoBrace;
@@ -119,24 +146,21 @@ enum CompleteResult IsComplete(StrBuilder *sb)
                 stack.count -= 1;
                 lef = stack.items[stack.count];
             }
+            if (stackPos.count > 0) {
+                stackPos.count -= 1;
+                lastPos = stackPos.items[stackPos.count];
+            }
             if (rig!=lef) {
                 r = Invalid;
                 goto defer;
+            }
+            if (rig==Curly) {
+                isLastCurly = true;
             }
         } else if (c=='\'') {
             sgStr = !sgStr;
         } else if (c=='\"') {
             dbStr = !dbStr;
-        } else if (c=='/') {
-            if (i+1<sb->count) {
-                char nc = sb->items[i+1];
-                if (nc=='/') {
-                    lnCom = 1;
-                } else if (nc=='*') {
-                    blCom = 1;
-                    i += 1;
-                }
-            }
         }
     }
     if (lnCom || blCom) {
@@ -147,11 +171,14 @@ enum CompleteResult IsComplete(StrBuilder *sb)
         r = Incomplete;
     } else if (sb->items[sb->count-2]=='\\') {
         r = Incomplete;
+    } else if (isLastCurly && LastChar(sb->items, lastPos)=='=') {
+        r = Incomplete;
     } else {
         r = Complete;
     }
 defer:
     nob_da_free(stack);
+    nob_da_free(stackPos);
     return r;
 }
 
@@ -257,7 +284,7 @@ enum InputKind GetInput(StrBuilder *out, usz *outLine, bool isTop, bool isTimed)
     size_t mark = nob_temp_save();
     char *prompt;
     
-    bool isCmd = false;
+    bool isCmd = false, isCont = false;
     usz line = *outLine;
     char c;
 
@@ -266,8 +293,13 @@ enum InputKind GetInput(StrBuilder *out, usz *outLine, bool isTop, bool isTimed)
         if (isCmd) {
             prompt = SHL_SIGN" ";
         } else {
-            prompt = nob_temp_sprintf("%s%2zu%c ", isTimed? "t:": "", 1+line, isTop? ']': ')');
+            prompt = nob_temp_sprintf("%s%2zu%c ", 
+                isTimed? "t:": "", 
+                1+line, 
+                isCont ? '.' : (isTop ? ']' : ')')
+            );
         }
+        isCont = true;
         if (SbReadLine(out, prompt)==0) {
             r = InputEnd;
             break;
@@ -299,7 +331,7 @@ enum InputKind GetInput(StrBuilder *out, usz *outLine, bool isTop, bool isTimed)
     *outLine = line;
     if (r!=Empty) return r;
     if (IsEmpty(out)) return Empty;
-    c = LastChar(out);
+    c = LastChar(out->items, out->count);
     if (c=='}' || c==';') return Stmt;
     return Expr;
 }
