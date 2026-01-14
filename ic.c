@@ -5,6 +5,7 @@
 
 #include "libtcc/libtcc.h"
 #define NOB_IMPLEMENTATION
+#define NOB_UNSTRIP_PREFIX
 #define NOB_NO_ECHO
 #define NOB_DA_INIT_CAP 16
 #include "nob.h"
