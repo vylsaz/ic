@@ -15,6 +15,9 @@
     #include <dlfcn.h>
 #endif
 
+#define STB_C_LEXER_IMPLEMENTATION
+#include "stb_c_lexer.h"
+
 #define CMD_SIGN ";"
 #define SHL_SIGN ">"
 #define CPP_SIGN "#"
@@ -35,35 +38,37 @@ char *GetTempDir(void)
     return nob_temp_sprintf("%s/temp", exePath);
 }
 
-char LastChar(char const *items, usz count)
+void LastToken(char const *items, usz count, stb_lexer *outLexer)
 {
-    usz i;
-    for (i = 0; i<count; ++i) {
-        char c = items[count-i-1];
+    static char *buf = NULL;
+    static int const bufCap = 10000;
+    if (buf==NULL) buf = malloc(bufCap);
 
-        if (c=='/' &&
-            i+1<count && items[count-i-2]=='*') {
-            usz j;
-            for (j = i+2; j<count; ++j) {
-                if (items[count-j-1]=='*' &&
-                    j+1<count && items[count-j-2]=='/') {
-                    i = j+1;
-                    break;
-                }
-            }
-        } else if (!isspace(c)) {
-            return c;
-        }
+    stb_lexer lexer = {0}, lastLexer = {0};
+    stb_c_lexer_init(&lexer, items, items+count, buf, bufCap);
+    while (stb_c_lexer_get_token(&lexer)) {
+        lastLexer = lexer;
+        if (lexer.token==CLEX_parse_error) break;
     }
-    return '\0';
+    *outLexer = lastLexer;
 }
+
+enum InputKind {
+    Stmt,
+    Expr,
+    Empty,
+    Cmd,
+    Pre,
+    Shell,
+    InputEnd,
+};
 
 enum CompleteResult {
     Incomplete = 0,
     Complete = 1,
     Invalid = 2,
 };
-enum CompleteResult IsComplete(StrBuilder *sb)
+enum CompleteResult IsComplete(StrBuilder *sb, enum InputKind *inputKind)
 {
     enum Braces {
         NoBrace,
@@ -80,20 +85,23 @@ enum CompleteResult IsComplete(StrBuilder *sb)
         ['}'] = Curly,
     };
 
-    enum CompleteResult r = Incomplete;
     bool sgStr = 0, dbStr = 0, lnCom = 0, blCom = 0, esc = 0;
-    struct BracesStack {
+    static struct BracesStack {
         uint8_t *items;
         usz count;
         usz capacity;
-    } stack = {0};
-    struct BracesPosStack {
+    } stack = {0}, topLevel = {0};
+    static struct BracesPosStack {
         usz *items;
         usz count;
         usz capacity;
-    } stackPos = {0};
-    usz lastPos = 0;
+    } stackPos = {0}, topLevelPos = {0};
     bool isLastCurly = false;
+
+    stack.count = 0;
+    stackPos.count = 0;
+    topLevel.count = 0;
+    topLevelPos.count = 0;
 
     usz i;
     for (i = 0; i<sb->count-1; ++i) {
@@ -142,43 +150,84 @@ enum CompleteResult IsComplete(StrBuilder *sb)
         } else if (c==')' || c==']' || c=='}') {
             enum Braces rig = braceFromChar[(int)c];
             enum Braces lef = NoBrace;
+            usz lastPos = 0;
             if (stack.count > 0) {
                 stack.count -= 1;
                 lef = stack.items[stack.count];
+                if (stack.count == 0) {
+                    nob_da_append(&topLevel, lef);
+                }
             }
             if (stackPos.count > 0) {
                 stackPos.count -= 1;
                 lastPos = stackPos.items[stackPos.count];
-            }
-            if (rig!=lef) {
-                r = Invalid;
-                goto defer;
+                if (stackPos.count == 0) {
+                    nob_da_append(&topLevelPos, lastPos);
+                }
             }
             if (rig==Curly) {
                 isLastCurly = true;
             }
+            if (rig!=lef) return Invalid;
         } else if (c=='\'') {
             sgStr = !sgStr;
         } else if (c=='\"') {
             dbStr = !dbStr;
         }
     }
-    if (lnCom || blCom) {
-        r = Incomplete;
-    } else if (dbStr || sgStr) {
-        r = Invalid;
-    } else if (stack.count > 0) {
-        r = Incomplete;
-    } else if (sb->items[sb->count-2]=='\\') {
-        r = Incomplete;
-    } else if (isLastCurly && LastChar(sb->items, lastPos)=='=') {
-        r = Incomplete;
+    if (lnCom || blCom) return Incomplete;
+    if (dbStr || sgStr) return Invalid; 
+    if (stack.count > 0) return Incomplete;
+    if (sb->items[sb->count-2]=='\\') return Incomplete;
+
+    enum CompleteResult r = Incomplete;
+    enum InputKind outInputKind = Stmt;
+    stb_lexer lexer = {0};
+
+    if (isLastCurly) {
+        assert(nob_da_last(&topLevel)==Curly);
+        usz lastPos = nob_da_last(&topLevelPos);
+        LastToken(sb->items, lastPos, &lexer);
+
+        if (lexer.token == ')') {
+            r = Complete;
+            outInputKind = Expr;
+
+            assert(topLevelPos.count >= 2);
+            usz pos = topLevelPos.items[topLevelPos.count-2];
+            LastToken(sb->items, pos, &lexer);
+            if (lexer.token == CLEX_id) {
+                if (strcmp(lexer.string, "if")==0
+                || strcmp(lexer.string, "while")==0
+                || strcmp(lexer.string, "for")==0
+                || strcmp(lexer.string, "switch")==0) {
+                    outInputKind = Stmt;
+                }
+            }
+        } else if (lexer.token == '=') {
+            r = Incomplete;
+        } else if (lexer.token == CLEX_id) {
+            if (strcmp(lexer.string, "do")==0
+            || strcmp(lexer.string, "else")==0) {
+                r = Complete;
+            } else {
+                r = Incomplete;
+            }
+        } else {
+            r = Complete;
+        }
     } else {
         r = Complete;
+        LastToken(sb->items, sb->count-1, &lexer);
+        if (lexer.token==0) {
+            outInputKind = Empty;
+        } else if (lexer.token==';') {
+            outInputKind = Stmt;
+        } else {
+            outInputKind = Expr;
+        }
     }
-defer:
-    nob_da_free(stack);
-    nob_da_free(stackPos);
+    if (r==Complete) *inputKind = outInputKind;
     return r;
 }
 
@@ -260,33 +309,14 @@ bool TrimPrefix(StrBuilder *out, char const *cstr)
     return TrimPrefixSv(sv, cstr);
 }
 
-bool IsEmpty(StrBuilder *out)
-{
-    usz i;
-    for (i = 0; i<out->count; ++i) {
-        if (!isspace(out->items[i])) return false;
-    }
-    return true;
-}
-
-enum InputKind {
-    Empty,
-    Expr,
-    Stmt,
-    Cmd,
-    Pre,
-    Shell,
-    InputEnd,
-};
 enum InputKind GetInput(StrBuilder *out, usz *outLine, bool isTop, bool isTimed)
 {
-    enum InputKind r = Empty;
+    enum InputKind r = Stmt;
     size_t mark = nob_temp_save();
     char *prompt;
-    
+
     bool isCmd = false, isCont = false;
     usz line = *outLine;
-    char c;
 
     out->count = 0;
     for (;;) {
@@ -325,15 +355,11 @@ enum InputKind GetInput(StrBuilder *out, usz *outLine, bool isTop, bool isTimed)
                 r = Pre;
                 break;
             }
-        } else if (IsComplete(out)) break;
+        } else if (IsComplete(out, &r)) break;
     }
     nob_temp_rewind(mark);
     *outLine = line;
-    if (r!=Empty) return r;
-    if (IsEmpty(out)) return Empty;
-    c = LastChar(out->items, out->count);
-    if (c=='}' || c==';') return Stmt;
-    return Expr;
+    return r;
 }
 
 void SimpleQuote(char const **opt, usz optLen, StrBuilder *out)
@@ -1742,7 +1768,7 @@ int main(int argc, char **argv)
             break; case 'f':
                 outLine = line;
                 kind2 = GetInput(&out, &outLine, true, false);
-                if (kind2==Stmt) {
+                if (kind2==Stmt || kind2==Expr) { // functions are recognized as expressions for now...
                     kind = Pre;
                     goto prep_label;
                 } else {
