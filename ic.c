@@ -198,11 +198,9 @@ enum CompleteResult IsComplete(StrBuilder *sb, enum InputKind *inputKind)
             usz pos = topLevelPos.items[topLevelPos.count-2];
             LastToken(sb->items, pos, &lexer);
             if (lexer.token == CLEX_id) {
-                if (strcmp(lexer.string, "if")==0
-                || strcmp(lexer.string, "while")==0
-                || strcmp(lexer.string, "for")==0
-                || strcmp(lexer.string, "switch")==0) {
-                    outInputKind = Stmt;
+                outInputKind = Stmt;
+                if (strcmp(lexer.string, "return")==0) {
+                    r = Incomplete;
                 }
             }
         } else if (lexer.token == '=') {
