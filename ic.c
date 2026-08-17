@@ -33,12 +33,6 @@ char *GetExePath(void)
     return nob_temp_dir_name(nob_temp_running_executable_path());
 }
 
-char *GetTempDir(void)
-{
-    char const *exePath = GetExePath();
-    return nob_temp_sprintf("%s/temp", exePath);
-}
-
 void LastToken(char const *items, usz count, stb_lexer *outLexer)
 {
     static char *buf = NULL;
@@ -975,11 +969,13 @@ char const *GetCompiler(void)
 }
 
 char const *exePath;
-char const *tempDir;
 
 char const *tccPath;
 char const *incPath;
 char const *libPath;
+
+char const *dataDir;
+char const *tempDir;
 
 char const *outRedirect;
 char const *errRedirect;
@@ -989,15 +985,35 @@ char const *outPath;
 
 char const *inpPath;
 
+char const *hisPath;
+
 void SetupPaths(void)
 {
+#ifdef _WIN32
+    char const *dataDirEnv = GetEnvTemp("LOCALAPPDATA");
+    if (!dataDirEnv) {
+        dataDirEnv = ".";
+    }
+#else
+    char const *dataDirEnv = GetEnvTemp("XDG_DATA_HOME");
+    if (!dataDirEnv) {
+        dataDirEnv = nob_temp_sprintf("%s/.ic", GetEnvTemp("HOME"));
+    }
+#endif
+
     exePath = GetExePath();
-    tempDir = GetTempDir();
 
     // tcc paths
     tccPath = GetExePath();
     incPath = nob_temp_sprintf("%s/include", tccPath);
     libPath = nob_temp_sprintf("%s/lib", tccPath);
+
+    // data and temp directories
+    dataDir = nob_temp_sprintf("%s/ic", dataDirEnv);
+    tempDir = nob_temp_sprintf("%s/temp", dataDir);
+    // create temp and data directories if they don't exist
+    assert(nob_mkdir_if_not_exists(dataDir));
+    assert(nob_mkdir_if_not_exists(tempDir));
 
     // for compiler detection & cl.exe output redirection
     outRedirect = nob_temp_sprintf("%s/_cc_out.txt", tempDir);
@@ -1018,6 +1034,9 @@ void SetupPaths(void)
 
     // input file for cc
     inpPath = nob_temp_sprintf("%s/_ic.c", tempDir);
+
+    // repl history file
+    hisPath = nob_temp_sprintf("%s/ic_history.txt", dataDir);
 }
 
 enum CompilerType {
@@ -1645,6 +1664,10 @@ void CompleteFunc(char const *buf, int cursorPos, mlCompletions *comp, void *use
     nob_temp_rewind(mark);
 }
 
+void ExitFunc(void)
+{
+    mlHistorySave(mlHistoryDefault, hisPath);
+}
 
 int main(int argc, char **argv)
 {
@@ -1657,10 +1680,11 @@ int main(int argc, char **argv)
     bool werror = true;
 
     SetupPaths();
-    if (!nob_mkdir_if_not_exists(tempDir)) return 1;
+    atexit(ExitFunc);
 
     mlSetCompletionMode(mlCompleteMode_Circular);
     mlSetCompletionCallback(CompleteFunc, NULL);
+    mlHistoryLoad(mlHistoryDefault, hisPath);
 
     for (int i = 1; i<argc; ++i) {
         char *a = argv[i];

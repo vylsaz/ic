@@ -14,6 +14,8 @@ MINILINE_API char *mlGetHistoryEntry(mlHistory *history, int index);
 MINILINE_API int mlHistoryLoad(mlHistory *history, char const *path);
 MINILINE_API int mlHistorySave(mlHistory *history, char const *path);
 MINILINE_API int mlHistoryWriteFrom(mlHistory *history, char const *path, int start, int isAppend);
+MINILINE_API mlHistory *mlHistoryNew(void);
+MINILINE_API void mlHistoryDestroy(mlHistory *history);
 
 typedef struct mlCompletions mlCompletions;
 typedef void (*mlCompleteFunc)(
@@ -1402,6 +1404,20 @@ int mlHistoryWriteFrom(mlHistory *history, char const *path, int start, int isAp
 int mlHistorySave(mlHistory *history, char const *path)
 {
     return mlHistoryWriteFrom(history, path, 0, 0);
+}
+
+mlHistory *mlHistoryNew(void)
+{
+    mlHistory *history = calloc(1, sizeof(mlHistory));
+    assert(history != NULL && "out of memory");
+    return history;
+}
+
+void mlHistoryDestroy(mlHistory *history)
+{
+    if (history == NULL) return;
+    mlHistoryFree(*history);
+    free(history);
 }
 
 /*
