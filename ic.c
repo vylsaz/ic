@@ -602,7 +602,7 @@ void SpawnShell(char const *sh, usz len)
         Ls(&cmd);
 #endif
     } else {
-        nob_cmd_run(&cmd);
+        nob_cmd_run(&cmd, .dont_reset=0);
     }
     nob_temp_rewind(mark);
     nob_da_free(cmd);
@@ -775,6 +775,7 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         "#include <string.h>\n"
         "#include <stdbool.h>\n"
         "#include <stdalign.h>\n"
+        "#include <stdarg.h>\n"
         "#include <math.h>\n"
         "#include <inttypes.h>\n"
         "#include <float.h>\n"
@@ -784,8 +785,13 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         "#define NOB_IMPLEMENTATION\n"
     ;
     
-    static char prolog[] = 
-        "#line 1 \"nowhere\"\n"
+    static char line1[] = "#line 1 \"nowhere\"\n";
+
+    static char prologDefs[] = 
+        "#define ONCE_LINE (__LINE__>LASTLINE)\n"
+        "#define ONCE if (__LINE__>LASTLINE)\n"
+        "#define __IC_STRINGIFY1(...) #__VA_ARGS__\n"
+        "#define __IC_STRINGIFY(...) __IC_STRINGIFY1(__VA_ARGS__)\n"
         BIN_FUNCTION(8) BIN_FUNCTION(16) BIN_FUNCTION(32) BIN_FUNCTION(64)
         "char *__binfloat32(float x) {"
             "union {uint32_t u; float f;} v; v.f = x; return __bin32(v.u);}\n"
@@ -794,10 +800,25 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
         "#define BIN(X) _Generic((X),"
             GEN_BIN(8) GEN_BIN(16) GEN_BIN(32) GEN_BIN(64) 
             "float:__binfloat32,double:__binfloat64,default:__bin64)(X)\n"
-        "#define __IC_STRINGIFY1(...) #__VA_ARGS__\n"
-        "#define __IC_STRINGIFY(...) __IC_STRINGIFY1(__VA_ARGS__)\n"
-        "#define ONCE_LINE (__LINE__>LASTLINE)\n"
-        "#define ONCE if (__LINE__>LASTLINE)\n"
+        "char *__alloc_sprintf(char const *fmt, ...) {"
+            "va_list args; va_start(args, fmt);"
+            "int len = vsnprintf(NULL, 0, fmt, args);"
+            "va_end(args);"
+            "char *buf = malloc(len+1);"
+            "if (!buf) {fprintf(stderr,\"OOM\\n\"); exit(1);}"
+            "va_start(args, fmt);"
+            "vsnprintf(buf, len+1, fmt, args);"
+            "va_end(args);"
+            "return buf;"
+        "}\n"
+        "#define FORMAT(FMT, ...) __alloc_sprintf(FMT, __VA_ARGS__)\n"
+        "#define WIDE(X) _Generic((X),"
+            "wchar_t:__alloc_sprintf(\"%lc\",(X)),"
+            "wchar_t*:__alloc_sprintf(\"%ls\",(X)),"
+            "wchar_t const*:__alloc_sprintf(\"%ls\",(X)),"
+            "default:__alloc_sprintf(\""PTR_FMT"\",(X)))\n"
+        ;
+    static char prologPrint[] =
         "#define PRINT(X) "
         "do {"
             "if (__LINE__>LASTLINE) _Generic((X),"
@@ -815,12 +836,6 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
                 "char*:__prints,char const*:__printcs,"
                 "default:__printp)(X);"
         "} while (0)\n"
-        "#define WPRINT(X) "
-        "do {"
-            "if (__LINE__>LASTLINE) _Generic((X),"
-            "wchar_t*:__printws,wchar_t const*:__printwcs,"
-            "wchar_t:__printwc,default:__printp)(X);"
-        "} while(0)\n"
         "void __printi8(int8_t x) {"
             "printf(\"(int8_t) %\"PRId8\" = 0x%02\"PRIX8\"\\n\",x,(uint8_t)x);}\n"
         "void __printi16(int16_t x) {"
@@ -883,9 +898,6 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
             "puts(\"\");}\n"
         "void __prints(char *x) {printf(\"%s\\n\",x);}\n"
         "void __printcs(char const*x) {printf(\"%s\\n\",x);}\n"
-        "void __printwc(wchar_t x) {printf(\"%lc\\n\",x);}\n"
-        "void __printws(wchar_t *x) {printf(\"%ls\\n\",x);}\n"
-        "void __printwcs(wchar_t const*x) {printf(\"%ls\\n\",x);}\n"
         "void __printp(void *x) {printf(\""PTR_FMT"\\n\",x);}\n"
         "void __printmem(void *x, size_t sz) {"
             "size_t i, j, k; uint8_t *a = x;"
@@ -902,7 +914,11 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
                 "for (j = i-k; j<i; ++j)" 
                     "if (a[j]<=126 && a[j]>=33) printf(\"%c\",a[j]); else printf(\".\");"
                 "puts(\"\");}}\n"
+        ;
+    static char prologPatch[] =
         PATCH(printf) PATCH(puts) PATCH(putchar)
+        ;
+    static char prologMain[] =
     #ifdef _WIN32
         "__declspec(dllexport)"
     #endif
@@ -920,14 +936,20 @@ bool PrepareCString(usz line, StrBuilder *pre, StrBuilder *first,
 #define IC_APPEND_BUF(SRC) nob_sb_append_buf(sb, (SRC)->items, (SRC)->count)
 #endif
 
-    nob_sb_append_cstr(sb, include);
+#define IC_APPEND_LIT(LIT) nob_sb_append_buf(sb, (LIT), NOB_ARRAY_LEN(LIT)-1)
+
+    IC_APPEND_LIT(include);
     IC_APPEND_BUF(pre);
     IC_APPEND_BUF(first);
-    nob_sb_append_cstr(sb, prolog);
+    IC_APPEND_LIT(line1);
+    IC_APPEND_LIT(prologDefs);
+    IC_APPEND_LIT(prologPrint);
+    IC_APPEND_LIT(prologPatch);
+    IC_APPEND_LIT(prologMain);
     nob_sb_append_cstr(sb, lastline);
     IC_APPEND_BUF(src);
     IC_APPEND_BUF(last);
-    nob_sb_append_cstr(sb, epilog);
+    IC_APPEND_LIT(epilog);
 
     return true;
 }
@@ -1498,9 +1520,10 @@ void Help(void)
         "Macros:\n"
         "  ONCE_LINE  -- true only the first time on the line\n"
         "  ONCE       -- execute the following statement only once\n"
-        "  PRINT(X)   -- print the value of X\n"
-        "  WPRINT(X)  -- print the value of X (wchar_t related)\n"
+        "  PRINT(X);  -- print the value of X\n"
         "  BIN(X)     -- get binary representation of integer X\n"
+        "  FORMAT(X, ...)  -- get formatted string\n"
+        "  WIDE(X)    -- format wide string X to a printable string\n"
     );
 }
 
@@ -1555,7 +1578,7 @@ void CompleteFunc(char const *buf, int cursorPos, mlCompletions *comp, void *use
         // others
         "sizeof", "alignof", "alignas",
         // defined by me
-        "PRINT", "BIN", "WPRINT",
+        "BIN", "FORMAT", "WIDE", "PRINT",
     };
 
     static char const *const constLike[] = {
