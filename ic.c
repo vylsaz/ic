@@ -998,6 +998,7 @@ void SetupPaths(void)
     char const *dataDirEnv = GetEnvTemp("XDG_DATA_HOME");
     if (!dataDirEnv) {
         dataDirEnv = nob_temp_sprintf("%s/.ic", GetEnvTemp("HOME"));
+        assert(nob_mkdir_if_not_exists(dataDirEnv));
     }
 #endif
 

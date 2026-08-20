@@ -22,7 +22,7 @@ void download_file(char const *url, char const *out_path)
 #else
     cmd_append(&cmd, "curl", "-L", "-o", out_path, url);
 #endif
-    if (!cmd_run(&cmd)) {
+    if (!cmd_run(&cmd, .dont_reset=0)) {
         nob_log(NOB_ERROR, "Failed to download %s", url);
     }
 
@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 
     if (!file_exists("./tinycc")) {
         cmd_append(&cmd, "git", "clone", "git://repo.or.cz/tinycc.git");
-        if (!cmd_run(&cmd)) return 1;
+        if (!cmd_run(&cmd, .dont_reset=0)) return 1;
     }
     
     int rebuild_is_needed = 0;
@@ -56,14 +56,14 @@ int main(int argc, char **argv)
         #ifdef _WIN32
         set_current_dir("./tinycc/win32");
         cmd_append(&cmd, "cmd.exe", "/c", ".\\build-tcc.bat");
-        if (!cmd_run(&cmd)) return 1;
+        if (!cmd_run(&cmd, .dont_reset=0)) return 1;
         set_current_dir("../..");
         #else
         set_current_dir("./tinycc");
         cmd_append(&cmd, "./configure");
-        if (!cmd_run(&cmd)) return 1;
+        if (!cmd_run(&cmd, .dont_reset=0)) return 1;
         cmd_append(&cmd, "make");
-        if (!cmd_run(&cmd)) return 1;
+        if (!cmd_run(&cmd, .dont_reset=0)) return 1;
         set_current_dir("..");
         #endif
 
@@ -85,11 +85,14 @@ int main(int argc, char **argv)
     nob_cc_output(&cmd, "ic");
     nob_cc_inputs(&cmd, "./ic.c");
     cmd_append(&cmd, "-L.", "-ltcc", "-lm");
+#ifndef _WIN32
+    cmd_append(&cmd, "-ldl", "-lpthread");
+#endif
 #ifdef __ANDROID__
     cmd_append(&cmd, temp_sprintf("-Wl,-R%s", get_current_dir_temp()));
 #endif
 
-    if (!cmd_run(&cmd)) return 1;
+    if (!cmd_run(&cmd, .dont_reset=0)) return 1;
 
     // if (!mkdir_if_not_exists("./temp")) return 1;
 
