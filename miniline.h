@@ -1,21 +1,43 @@
 #ifndef MINILINE_H_
 #define MINILINE_H_
 
-#ifndef MINILINE_API
-#define MINILINE_API
+#ifndef MINILINE_DEF
+#define MINILINE_DEF
 #endif
 
-MINILINE_API char *mlReadLine(char const *prompt);
+MINILINE_DEF char *mlReadLine(char const *prompt);
+
+typedef struct mlEditBuf {
+    int *els;
+    int len, cap;
+    int pos;
+    int fixed; // number of fixed elements at start (prompt)
+    int oldY, oldRows;
+} mlEditBuf;
+
+MINILINE_DEF void mlBegin(void);
+MINILINE_DEF void mlEnd(void);
+MINILINE_DEF int mlIsATTY(void);
+MINILINE_DEF int mlGetColumns(void);
+MINILINE_DEF void mlClearScreen(void);
+MINILINE_DEF void mlBeep(void);
+
+MINILINE_DEF char *mlEditInAction;
+MINILINE_DEF void mlEditHide(mlEditBuf *eb);
+MINILINE_DEF void mlEditShow(mlEditBuf *eb);
+MINILINE_DEF void mlEditSetPrompt(mlEditBuf *eb, char const *prompt);
+MINILINE_DEF char *mlEditFeed(mlEditBuf *eb);
+MINILINE_DEF void mlEditBufRelease(mlEditBuf eb);
 
 typedef struct mlHistory mlHistory;
-extern mlHistory *mlHistoryDefault;
-MINILINE_API int mlGetHistoryLen(mlHistory *history);
-MINILINE_API char *mlGetHistoryEntry(mlHistory *history, int index);
-MINILINE_API int mlHistoryLoad(mlHistory *history, char const *path);
-MINILINE_API int mlHistorySave(mlHistory *history, char const *path);
-MINILINE_API int mlHistoryWriteFrom(mlHistory *history, char const *path, int start, int isAppend);
-MINILINE_API mlHistory *mlHistoryNew(void);
-MINILINE_API void mlHistoryDestroy(mlHistory *history);
+MINILINE_DEF mlHistory *mlHistoryDefault;
+MINILINE_DEF int mlGetHistoryLen(mlHistory *history);
+MINILINE_DEF char *mlGetHistoryEntry(mlHistory *history, int index);
+MINILINE_DEF int mlHistoryLoad(mlHistory *history, char const *path);
+MINILINE_DEF int mlHistorySave(mlHistory *history, char const *path);
+MINILINE_DEF int mlHistoryWriteFrom(mlHistory *history, char const *path, int start, int isAppend);
+MINILINE_DEF mlHistory *mlHistoryNew(void);
+MINILINE_DEF void mlHistoryDestroy(mlHistory *history);
 
 typedef struct mlCompletions mlCompletions;
 typedef void (*mlCompleteFunc)(
@@ -24,15 +46,15 @@ typedef void (*mlCompleteFunc)(
     mlCompletions *comp,
     void *userdata
 );
-MINILINE_API void mlSetCompletionCallback(mlCompleteFunc func, void *userdata);
-MINILINE_API void mlAddCompletion(mlCompletions *comp, char const *replacement, char const *display);
-MINILINE_API void mlSetCompletionStart(mlCompletions *comp, int start);
+MINILINE_DEF void mlSetCompletionCallback(mlCompleteFunc func, void *userdata);
+MINILINE_DEF void mlAddCompletion(mlCompletions *comp, char const *replacement, char const *display);
+MINILINE_DEF void mlSetCompletionStart(mlCompletions *comp, int start);
 
 enum mlCompleteMode {
     mlCompleteMode_Circular, // default
     mlCompleteMode_List,
 };
-MINILINE_API void mlSetCompletionMode(enum mlCompleteMode mode);
+MINILINE_DEF void mlSetCompletionMode(enum mlCompleteMode mode);
 
 // flags:
 // #define MINILINE_IGNORE_ZWJ
@@ -57,6 +79,7 @@ MINILINE_API void mlSetCompletionMode(enum mlCompleteMode mode);
 #       define strdup _strdup
 #   endif
 #else
+#include <errno.h>
 #include <termios.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -221,11 +244,11 @@ static void mlEnableRawMode(void)
 #endif
 }
 
+static void mlHistoryReset(mlHistory *h);
+static void mlHistoryPush(mlHistory *h, int const *entry, int entryLen);
+
 void mlBegin(void)
 {
-    if (st->history == NULL) {
-        st->history = &mlHistoryGlobal;
-    }
 #ifdef _WIN32
     st->inp = GetStdHandle(STD_INPUT_HANDLE);
     st->out = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -238,6 +261,12 @@ void mlBegin(void)
     tcgetattr(st->ifd, &st->origTerm);
 #endif
     mlEnableRawMode();
+
+    if (st->history == NULL) {
+        st->history = &mlHistoryGlobal;
+    }
+    mlHistoryReset(st->history);
+    mlHistoryPush(st->history, NULL, 0); // empty entry for current line
 }
 
 void mlEnd(void)
@@ -265,137 +294,185 @@ int mlGetColumns(void)
 #endif
 }
 
+enum mlReadResult {
+    ML_READ_SOME = 1,
+    ML_READ_CONT = 0,
+    ML_READ_EOF = -1,
+};
+
 #ifndef _WIN32
-char mlReadUtf8Char(void)
+static int mlReadUtf8Char(char *c)
+{
+    ssize_t nread = read(st->ifd, c, 1);
+    if (nread < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return ML_READ_CONT;
+        } else {
+            return ML_READ_EOF;
+        }
+    } else if (nread == 0) {
+        return ML_READ_EOF;
+    }
+    return ML_READ_SOME;
+}
+static int mlReadUtf32(int *cp)
 {
     char c;
-    ssize_t nread;
-    while ((nread = read(st->ifd, &c, 1)) == 0);
-    assert(nread == 1);
-    return c;
-}
-int mlReadUtf32(void)
-{
-    int cp;
-    char c = mlReadUtf8Char();
+#   define ML_READ_UTF8_CHECKED(X) \
+        do {\
+            int r = mlReadUtf8Char(X); \
+            if (r != ML_READ_SOME) { return r; } \
+        } while (0)
+
+    ML_READ_UTF8_CHECKED(&c);
     if ((c & 0x80) == 0) {
-        cp = c;
+        *cp = c;
     } else if ((c & 0xE0) == 0xC0) {
-        char c2 = mlReadUtf8Char();
-        cp = ((c & 0x1F) << 6) | (c2 & 0x3F);
+        char c2;
+        ML_READ_UTF8_CHECKED(&c2);
+        *cp = ((c & 0x1F) << 6) | (c2 & 0x3F);
     } else if ((c & 0xF0) == 0xE0) {
-        char c2 = mlReadUtf8Char();
-        char c3 = mlReadUtf8Char();
-        cp = ((c & 0x0F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+        char c2, c3;
+        ML_READ_UTF8_CHECKED(&c2);
+        ML_READ_UTF8_CHECKED(&c3);
+        *cp = ((c & 0x0F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
     } else if ((c & 0xF8) == 0xF0) {
-        char c2 = mlReadUtf8Char();
-        char c3 = mlReadUtf8Char();
-        char c4 = mlReadUtf8Char();
-        cp = ((c & 0x07) << 18) | ((c2 & 0x3F) << 12) | ((c3 & 0x3F) << 6) | (c4 & 0x3F);
+        char c2, c3, c4;
+        ML_READ_UTF8_CHECKED(&c2);
+        ML_READ_UTF8_CHECKED(&c3);
+        ML_READ_UTF8_CHECKED(&c4);
+        *cp = ((c & 0x07) << 18) | ((c2 & 0x3F) << 12) | ((c3 & 0x3F) << 6) | (c4 & 0x3F);
     } else {
         assert(0 && "invalid utf8");
     }
-    return cp;
+    return ML_READ_SOME;
+#   undef ML_READ_UTF8_CHECKED
 }
 #endif
 
-int mlReadKey(void)
+static int mlReadKey(int *outKey)
 {
+    assert(outKey != NULL);
 #ifdef _WIN32
+    static int highSurrogate = 0;
     DWORD count;
-    int highSurrogate = 0, c = 0;
     INPUT_RECORD rec;
+
     for (;;) {
-        int key;
-        DWORD event = WaitForSingleObject(st->inp, INFINITE);
-        assert(event==WAIT_OBJECT_0);
-        ReadConsoleInputW(st->inp, &rec, 1, &count);
+        if (!GetNumberOfConsoleInputEvents(st->inp, &count)) {
+            return ML_READ_CONT;
+        }
+        if (count == 0) {
+            return ML_READ_CONT;
+        }
+        if (!PeekConsoleInputW(st->inp, &rec, 1, &count) || count == 0) {
+            return ML_READ_CONT;
+        }
+        if (!ReadConsoleInputW(st->inp, &rec, 1, &count)) {
+            return ML_READ_CONT;
+        }
         if (rec.EventType != KEY_EVENT) {
             continue;
         }
-        // Windows provides for entry of characters that are not on your keyboard by sending the
-        // Unicode characters as a "key up" with virtual keycode 0x12 (VK_MENU == Alt key) ...
-        // accept these characters, otherwise only process characters on "key down"
+
+        // Accept Alt+numpad Unicode key-up, otherwise require key-down.
         if (!rec.Event.KeyEvent.bKeyDown && (rec.Event.KeyEvent.wVirtualKeyCode != VK_MENU)) {
             continue;
         }
-        key = rec.Event.KeyEvent.uChar.UnicodeChar;
-        if (key == 0) {
-            switch (rec.Event.KeyEvent.wVirtualKeyCode) {
-            case VK_UP:     return ML_KEY_UP;
-            case VK_DOWN:   return ML_KEY_DOWN;
-            case VK_RIGHT:  return ML_KEY_RIGHT;
-            case VK_LEFT:   return ML_KEY_LEFT;
-            case VK_DELETE: return ML_KEY_DELETE;
-            case VK_HOME:   return ML_KEY_HOME;
-            case VK_END:    return ML_KEY_END;
-            default:
+
+        {
+            int key = rec.Event.KeyEvent.uChar.UnicodeChar;
+            if (key == 0) {
+                switch (rec.Event.KeyEvent.wVirtualKeyCode) {
+                case VK_UP:     *outKey = ML_KEY_UP; return ML_READ_SOME;
+                case VK_DOWN:   *outKey = ML_KEY_DOWN; return ML_READ_SOME;
+                case VK_RIGHT:  *outKey = ML_KEY_RIGHT; return ML_READ_SOME;
+                case VK_LEFT:   *outKey = ML_KEY_LEFT; return ML_READ_SOME;
+                case VK_DELETE: *outKey = ML_KEY_DELETE; return ML_READ_SOME;
+                case VK_HOME:   *outKey = ML_KEY_HOME; return ML_READ_SOME;
+                case VK_END:    *outKey = ML_KEY_END; return ML_READ_SOME;
+                default:
+                    continue;
+                }
+            }
+
+            if (key >= 0xD800 && key <= 0xDBFF) {
+                highSurrogate = key - 0xD800;
                 continue;
             }
-        } else if (key >= 0xD800 && key <= 0xDBFF) {
-            highSurrogate = key - 0xD800;
-            continue;
-        } else {
-            // we got a real character, return it
+
             if (key >= 0xDC00 && key <= 0xDFFF) {
                 key -= 0xDC00;
                 key |= highSurrogate << 10;
                 key += 0x10000;
+                highSurrogate = 0;
+            } else {
+                highSurrogate = 0;
             }
-            c = key;
-            break;
+
+            *outKey = key;
+            return ML_READ_SOME;
         }
     }
-    return c;
 #else
     int seq[3];
-    int key = mlReadUtf32();
+    int key;
+    int r = mlReadUtf32(&key);
+    if (r != ML_READ_SOME) { return r; }
+
     if (key == ML_KEY_ESCAPE) {
-        // escape sequence
-        seq[0] = mlReadUtf32();
+        *outKey = ML_KEY_ESCAPE;
+#       define ML_READ_ESC_CHECKED(X) \
+            do { \
+                r = mlReadUtf32(X); \
+                if (r != ML_READ_SOME) { return ML_READ_SOME; } \
+            } while (0)
+        ML_READ_ESC_CHECKED(&seq[0]);
         if (seq[0] == '[') {
-            seq[1] = mlReadUtf32();
+            ML_READ_ESC_CHECKED(&seq[1]);
             if (seq[1] >= '0' && seq[1] <= '9') {
-                seq[2] = mlReadUtf32();
+                ML_READ_ESC_CHECKED(&seq[2]);
                 if (seq[2] == '~') {
                     switch (seq[1]) {
-                    case '1': return ML_KEY_HOME;
-                    case '3': return ML_KEY_DELETE;
-                    case '4': return ML_KEY_END;
-                    case '7': return ML_KEY_HOME;
-                    case '8': return ML_KEY_END;
+                    case '1': *outKey = ML_KEY_HOME; return ML_READ_SOME;
+                    case '3': *outKey = ML_KEY_DELETE; return ML_READ_SOME;
+                    case '4': *outKey = ML_KEY_END; return ML_READ_SOME;
+                    case '7': *outKey = ML_KEY_HOME; return ML_READ_SOME;
+                    case '8': *outKey = ML_KEY_END; return ML_READ_SOME;
                     }
                 }
             } else {
                 switch (seq[1]) {
-                case 'A': return ML_KEY_UP;
-                case 'B': return ML_KEY_DOWN;
-                case 'C': return ML_KEY_RIGHT;
-                case 'D': return ML_KEY_LEFT;
-                case 'H': return ML_KEY_HOME;
-                case 'F': return ML_KEY_END;
+                case 'A': *outKey = ML_KEY_UP; return ML_READ_SOME;
+                case 'B': *outKey = ML_KEY_DOWN; return ML_READ_SOME;
+                case 'C': *outKey = ML_KEY_RIGHT; return ML_READ_SOME;
+                case 'D': *outKey = ML_KEY_LEFT; return ML_READ_SOME;
+                case 'H': *outKey = ML_KEY_HOME; return ML_READ_SOME;
+                case 'F': *outKey = ML_KEY_END; return ML_READ_SOME;
                 }
             }
         } else if (seq[0] == 'O') {
-            seq[1] = mlReadUtf32();
+            ML_READ_ESC_CHECKED(&seq[1]);
             switch (seq[1]) {
-            case 'H': return ML_KEY_HOME;
-            case 'F': return ML_KEY_END;
+            case 'H': *outKey = ML_KEY_HOME; return ML_READ_SOME;
+            case 'F': *outKey = ML_KEY_END; return ML_READ_SOME;
             }
         }
-        return ML_KEY_ESCAPE;
+        return ML_READ_SOME;
+#       undef ML_READ_ESC_CHECKED
     }
-    return key;
+    *outKey = key;
+    return ML_READ_SOME;
 #endif
 }
 
-void mlHistoryFree(mlHistory h)
+static void mlHistoryFree(mlHistory h)
 {
     mlDaFree(h.his);
     mlDaFree(h.buf);
 }
 
-mlHistoryEntry mlHistoryAtPos(mlHistory *h)
+static mlHistoryEntry mlHistoryAtPos(mlHistory *h)
 {
     int index = h->his.len - 1 - h->pos;
     assert(index >= 0 && index <= h->his.len);
@@ -438,7 +515,7 @@ void mlHistoryPush(mlHistory *h, int const *entry, int entryLen)
     mlDaAppend(&h->his, he);
 }
 
-void mlHistoryPop(mlHistory *h)
+static void mlHistoryPop(mlHistory *h)
 {
     if (h->his.len == 0) return;
     mlHistoryEntry he = mlDaLast(&h->his);
@@ -488,7 +565,7 @@ typedef struct mlStrBuilder {
     size_t len, cap;
 } mlStrBuilder;
 
-void mlSbAppendCstr(mlStrBuilder *sb, char const *cstr)
+static void mlSbAppendCstr(mlStrBuilder *sb, char const *cstr)
 {
     size_t n = strlen(cstr);
     mlDaAppendN(sb, cstr, n);
@@ -602,13 +679,11 @@ static void mlCodePointsFromCstr(mlCodePoints *cps, char const *cstr)
     }
 }
 
-typedef struct mlEditBuf {
-    int *els;
-    int len, cap;
-    int pos;
-    int fixed; // number of fixed elements at start (prompt)
-    int oldY, oldRows;
-} mlEditBuf;
+
+void mlEditBufRelease(mlEditBuf eb)
+{
+    mlDaFree(eb);
+}
 
 static void mlEditBufFromCstr(mlEditBuf *eb, char const *cstr)
 {
@@ -681,7 +756,7 @@ static int mlEditBufOffsetFromUtf8Length(mlEditBuf *eb, int len)
     return count;
 }
 
-static void mlRefreshLine(mlEditBuf *eb)
+static void mlRefreshLineWithClear(mlEditBuf *eb, int isClear)
 {
     mlOutputBuilder ob = {0};
     int cols = mlGetColumns();
@@ -702,6 +777,8 @@ static void mlRefreshLine(mlEditBuf *eb)
     }
 
     mlObSimpStr(&ob, "\r" ML_CSI "0K"); // clear entire line
+
+    if (isClear) goto writeBuf;
 
     int accum = 0;
     // put the code points
@@ -753,11 +830,27 @@ static void mlRefreshLine(mlEditBuf *eb)
     }
     // move cursor to col curX+1
     mlObSimpStr(&ob, mlTempSprintf(ML_CSI "%dG", curX+1)); 
+writeBuf:
     mlObWrite(&ob);
     mlDaFree(ob);
 
     eb->oldY = curY;
     eb->oldRows = rows;
+}
+
+static void mlRefreshLine(mlEditBuf *eb)
+{
+    mlRefreshLineWithClear(eb, 0);
+}
+
+
+void mlEditHide(mlEditBuf *eb)
+{
+    mlRefreshLineWithClear(eb, 1);
+}
+void mlEditShow(mlEditBuf *eb)
+{
+    mlRefreshLineWithClear(eb, 0);
 }
 
 void mlEditSetPrompt(mlEditBuf *eb, char const *prompt)
@@ -946,7 +1039,7 @@ static void mlEditHistoryMove(mlEditBuf *eb, mlHistory *h, int dir)
     mlRefreshLine(eb);
 }
 
-static void mlEditClearScreen(void)
+void mlClearScreen(void)
 {
     mlOutputBuilder ob = {0};
     mlObSimpStr(&ob, ML_CSI "H" ML_CSI "2J");
@@ -954,7 +1047,7 @@ static void mlEditClearScreen(void)
     mlDaFree(ob);
 }
 
-static void mlBeep(void) {
+void mlBeep(void) {
     fprintf(stderr, "\x7");
     fflush(stderr);
 }
@@ -1087,12 +1180,20 @@ char *mlEditInAction = "mlEditInAction YOU SHOULD NOT SEE THIS";
 
 char *mlEditFeed(mlEditBuf *eb)
 {
-    int key = mlReadKey();
     int isRecall = 0;
     int tabState = 0;
+    int key;
+    int r = mlReadKey(&key);
+    if (r == ML_READ_EOF) {
+        goto returnEof;
+    } else if (r == ML_READ_CONT) {
+        return mlEditInAction;
+    }
     switch (key) {
     default:
-        mlEditInsert(eb, key);
+        if (key >= 32) {
+            mlEditInsert(eb, key);
+        }
         break;
     case ML_KEY_ENTER:
     case ML_KEY_CTRL_J:
@@ -1100,6 +1201,7 @@ char *mlEditFeed(mlEditBuf *eb)
         mlEditMoveEnd(eb);
         return mlStrFromEditBuf(eb);
     case ML_KEY_CTRL_C:
+    returnEof:
         mlHistoryPop(st->history);
         return NULL;
     case ML_KEY_BACKSPACE:
@@ -1138,7 +1240,7 @@ char *mlEditFeed(mlEditBuf *eb)
         mlEditDeletePrevWord(eb);
         break;
     case ML_KEY_CTRL_L:
-        mlEditClearScreen();
+        mlClearScreen();
         mlRefreshLine(eb);
         break;
     case ML_KEY_DELETE:
@@ -1175,14 +1277,12 @@ char *mlEditFeed(mlEditBuf *eb)
     return mlEditInAction;
 }
 
-char *mlReadLineTTY(char const *prompt)
+static char *mlReadLineTTY(char const *prompt)
 {
     char *res;
     mlEditBuf eb = {0};
     mlBegin();
     mlEditSetPrompt(&eb, prompt);
-    mlHistoryReset(st->history);
-    mlHistoryPush(st->history, NULL, 0); // empty entry
     for (;;) {
         res = mlEditFeed(&eb);
         if (res != mlEditInAction) {
@@ -1191,11 +1291,11 @@ char *mlReadLineTTY(char const *prompt)
     }
     mlEnd();
     puts("");
-    mlDaFree(eb);
+    mlEditBufRelease(eb);
     return res;
 }
 
-char *mlReadLineNoTTY(char const *prompt)
+static char *mlReadLineNoTTY(char const *prompt)
 {
     mlStrBuilder out = {0};
     printf("%s", prompt);
@@ -1258,7 +1358,7 @@ typedef struct mlWStrBuilder {
     int cap, len;
 } mlWStrBuilder;
 
-void mlWsbAppendStr(mlWStrBuilder *wsb, char const *str, int len)
+static void mlWsbAppendStr(mlWStrBuilder *wsb, char const *str, int len)
 {
     int n = MultiByteToWideChar(CP_UTF8, 0, str, len, NULL, 0);
     mlDaReserve(wsb, wsb->len+n, ML_DA_DEFAULT_CAP);
