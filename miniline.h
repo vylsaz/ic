@@ -80,6 +80,7 @@ MINILINE_DEF void mlSetCompletionMode(enum mlCompleteMode mode);
 #   endif
 #else
 #include <errno.h>
+#include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -1370,7 +1371,7 @@ static void mlWsbAppendStr(mlWStrBuilder *wsb, char const *str, int len)
 static int mlReadFile(mlStrBuilder *sb, char const *path)
 {
     int result = 1;
-    FILE *f;
+    FILE *f = NULL;
 #ifdef _WIN32
     mlWStrBuilder wsb = {0};
     mlWsbAppendStr(&wsb, path, (int)strlen(path));
@@ -1390,57 +1391,150 @@ static int mlReadFile(mlStrBuilder *sb, char const *path)
     if (m < 0)                     ml_return_defer(0);
     if (fseek(f, 0, SEEK_SET) < 0) ml_return_defer(0);
 
-    size_t new_len = sb->len + m;
-    if (new_len > sb->cap) {
-        sb->els = realloc(sb->els, new_len);
-        assert(sb->els != NULL && "out of memory");
-        sb->cap = new_len;
+    {
+        size_t newLen = sb->len + (size_t)m;
+        if (newLen > sb->cap) {
+            sb->els = realloc(sb->els, newLen);
+            assert(sb->els != NULL && "out of memory");
+            sb->cap = newLen;
+        }
     }
 
-    fread(sb->els + sb->len, m, 1, f);
+    if (m > 0) {
+        if (fread(sb->els + sb->len, (size_t)m, 1, f) != 1) {
+            ml_return_defer(0);
+        }
+    }
     if (ferror(f)) {
         ml_return_defer(0);
     }
-    sb->len = new_len;
+    sb->len += (size_t)m;
 
 defer:
     if (f) fclose(f);
     return result;
 }
 
-static int mlWriteFile(char const *path, char const *data, size_t size, int isAppend)
+static int mlWriteFile(char const *path, char const *data, size_t size)
 {
-    FILE *f;
+    FILE *f = NULL;
     int result = 1;
-    const char *buf = NULL;
+    const char *buf = data;
 
 #ifdef _WIN32
     mlWStrBuilder wsb = {0};
     mlWsbAppendStr(&wsb, path, (int)strlen(path));
     mlDaAppend(&wsb, L'\0');
-    f = _wfopen(wsb.els, isAppend ? L"ab" : L"wb");
+    f = _wfopen(wsb.els, L"wb");
     mlDaFree(wsb);
 #else
-    f = fopen(path, isAppend ? "ab" : "wb");
+    f = fopen(path, "wb");
 #endif
     if (f == NULL) { ml_return_defer(0); }
 
-    //           len
-    //           v
-    // aaaaaaaaaa
-    //     ^
-    //     data
-
-    buf = data;
     while (size > 0) {
         size_t n = fwrite(buf, 1, size, f);
         if (ferror(f)) { ml_return_defer(0); }
         size -= n;
-        buf  += n;
+        buf += n;
     }
 
 defer:
     if (f) fclose(f);
+    return result;
+}
+
+static int mlAppendFileAtomic(char const *path, char const *data, size_t size)
+{
+    if (size == 0) return 1;
+#ifdef _WIN32
+    int result = 0;
+    HANDLE h = INVALID_HANDLE_VALUE;
+    mlWStrBuilder wsb = {0};
+    DWORD written = 0;
+
+    mlWsbAppendStr(&wsb, path, (int)strlen(path));
+    mlDaAppend(&wsb, L'\0');
+
+    h = CreateFileW(
+        wsb.els,
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    if (h == INVALID_HANDLE_VALUE) {
+        mlDaFree(wsb);
+        return 0;
+    }
+    if (size > 0xFFFFFFFFu) {
+        CloseHandle(h);
+        mlDaFree(wsb);
+        return 0;
+    }
+    result = WriteFile(h, data, (DWORD)size, &written, NULL) && written == (DWORD)size;
+    CloseHandle(h);
+    mlDaFree(wsb);
+    return result;
+#else
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd < 0) {
+        return 0;
+    }
+    if (size > (size_t)SSIZE_MAX) {
+        close(fd);
+        return 0;
+    }
+    {
+        ssize_t n = write(fd, data, size);
+        int result = (n == (ssize_t)size);
+        close(fd);
+        return result;
+    }
+#endif
+}
+
+static int mlWriteFileAtomic(char const *path, char const *data, size_t size)
+{
+    int result = 1;
+    mlStrBuilder tmpPath = {0};
+    mlSbAppendCstr(&tmpPath, path);
+    mlSbAppendCstr(&tmpPath, ".tmp");
+    mlDaAppend(&tmpPath, '\0');
+
+    if (!mlWriteFile(tmpPath.els, data, size)) {
+        result = 0;
+        goto defer;
+    }
+
+#ifdef _WIN32
+    {
+        int ok = 0;
+        mlWStrBuilder wtmp = {0};
+        mlWStrBuilder wdst = {0};
+        mlWsbAppendStr(&wtmp, tmpPath.els, (int)strlen(tmpPath.els));
+        mlDaAppend(&wtmp, L'\0');
+        mlWsbAppendStr(&wdst, path, (int)strlen(path));
+        mlDaAppend(&wdst, L'\0');
+        ok = MoveFileExW(wtmp.els, wdst.els, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        if (!ok) {
+            _wremove(wtmp.els);
+            result = 0;
+        }
+        mlDaFree(wtmp);
+        mlDaFree(wdst);
+    }
+#else
+    if (rename(tmpPath.els, path) != 0) {
+        unlink(tmpPath.els);
+        result = 0;
+    }
+#endif
+
+defer:
+    mlDaFree(tmpPath);
     return result;
 }
 #undef ml_return_defer
@@ -1490,13 +1584,21 @@ int mlHistoryWriteFrom(mlHistory *history, char const *path, int start, int isAp
 {
     mlStrBuilder sb = {0};
     int historyLen = mlGetHistoryLen(history);
+    if (start < 0 || start >= historyLen) {
+        return 0;
+    }
     for (int i = start; i < historyLen; ++i) {
         char *entry = mlGetHistoryEntry(history, i);
         mlSbAppendCstr(&sb, entry);
         mlDaAppend(&sb, '\n');
         free(entry);
     }
-    int result = mlWriteFile(path, sb.els, sb.len, isAppend);
+    int result;
+    if (isAppend) {
+        result = mlAppendFileAtomic(path, sb.els, sb.len);
+    } else {
+        result = mlWriteFileAtomic(path, sb.els, sb.len);
+    }
     mlDaFree(sb);
     return result;
 }
