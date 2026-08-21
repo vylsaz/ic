@@ -75,8 +75,7 @@ MINILINE_DEF void mlSetCompletionMode(enum mlCompleteMode mode);
 #include <windows.h>
 #include <io.h>
 #   if defined(_MSC_VER) && !defined(__clang__)
-    typedef long long ssize_t;
-#       define strdup _strdup
+        typedef long long ssize_t;
 #   endif
 #else
 #include <errno.h>
@@ -206,6 +205,19 @@ enum mlKeySpecial {
 #define mlDaLast(da) (da)->els[(assert((da)->len>0 && "empty array"), (da)->len-1)]
 #define mlDaFree(da) free((da).els)
 
+static char *mlStrDupN(char const *s, size_t n)
+{
+    char *dup = malloc(n+1);
+    assert(dup != NULL && "out of memory");
+    memcpy(dup, s, n);
+    dup[n] = '\0';
+    return dup;
+}
+
+static char *mlStrDup(char const *s)
+{
+    return mlStrDupN(s, strlen(s));
+}
 
 #ifdef _WIN32
 static void mlEnableVt(void)
@@ -532,8 +544,8 @@ void mlSetCompletionMode(enum mlCompleteMode mode)
 void mlAddCompletion(mlCompletions *comp, char const *replacement, char const *display)
 {
     struct mlCompletionPair pair = {
-        .replacement = strdup(replacement),
-        .display = strdup(display),
+        .replacement = mlStrDup(replacement),
+        .display = mlStrDup(display),
     };
     mlDaAppend(comp, pair);
 }
