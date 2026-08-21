@@ -559,8 +559,6 @@ void mlCompletionsClear(mlCompletions *comps)
     comps->start = 0;
 }
 
-static int mlMkWcwidth(int ucs);
-
 typedef struct mlStrBuilder {
     char *els;
     size_t len, cap;
@@ -757,6 +755,18 @@ static int mlEditBufOffsetFromUtf8Length(mlEditBuf *eb, int len)
     return count;
 }
 
+static int mlMkWcwidth(int ucs);
+
+static int mlAnsiEscapeSequenceLength(int *cps, int len)
+{
+    int i = 1;
+    if  (!(i<len && cps[i]=='[')) { return 0; } ++i;
+    for (; i<len && '0'<=cps[i] && cps[i]<='?'; ++i);
+    for (; i<len && ' '<=cps[i] && cps[i]<='/'; ++i);
+    if    (i<len && '@'<=cps[i] && cps[i]<='~') { return 1+i; }
+    return 0;
+}
+
 static void mlRefreshLineWithClear(mlEditBuf *eb, int isClear)
 {
     mlOutputBuilder ob = {0};
@@ -785,6 +795,25 @@ static void mlRefreshLineWithClear(mlEditBuf *eb, int isClear)
     // put the code points
     for (int i = 0; i < eb->len; ++i) {
         int const cp = eb->els[i];
+
+        if (cp == ML_KEY_ESCAPE) {
+            // skip escape sequences
+            int const al = mlAnsiEscapeSequenceLength(&eb->els[i], eb->len-i);
+            if (al > 0) {
+                // escape seq is simple, no need to translate to output fmt
+                // (utf16 on windows, else utf8)
+                for (int j = 0; j < al; ++j) {
+#                   ifdef _WIN32
+                        mlDaAppend(&ob, (WCHAR)(eb->els[i+j]));
+#                   else
+                        mlDaAppend(&ob, (char)(eb->els[i+j]));
+#                   endif
+                }
+                i += al-1;
+                continue;
+            }
+        }
+
         int const w = mlMkWcwidth(cp);
         if (w < 0) continue;
         if (eb->pos == i) {
