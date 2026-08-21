@@ -40,6 +40,9 @@ int main(int argc, char **argv)
 
     GO_REBUILD_URSELF_PLUS(argc, argv, "./nob.h");
 
+    bool run = false;
+    if (argc == 2 && strcmp(argv[1], "run") == 0) run = true;
+
     Cmd cmd = {0};
 
     if (!file_exists("./tinycc")) {
@@ -96,5 +99,9 @@ int main(int argc, char **argv)
 
     // if (!mkdir_if_not_exists("./temp")) return 1;
 
+    if (!run) return 0;
+
+    cmd_append(&cmd, "./ic");
+    if (!cmd_run(&cmd, .dont_reset=0)) return 1;
     return 0;
 }
