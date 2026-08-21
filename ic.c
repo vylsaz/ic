@@ -989,6 +989,7 @@ char const *hisPath;
 
 void SetupPaths(void)
 {
+    bool isDataDirHidden = false;
 #ifdef _WIN32
     char const *dataDirEnv = GetEnvTemp("LOCALAPPDATA");
     if (!dataDirEnv) {
@@ -997,8 +998,9 @@ void SetupPaths(void)
 #else
     char const *dataDirEnv = GetEnvTemp("XDG_DATA_HOME");
     if (!dataDirEnv) {
-        dataDirEnv = nob_temp_sprintf("%s/.ic", GetEnvTemp("HOME"));
-        assert(nob_mkdir_if_not_exists(dataDirEnv));
+        dataDirEnv = GetEnvTemp("HOME");
+        assert(dataDirEnv);
+        isDataDirHidden = true;
     }
 #endif
 
@@ -1010,7 +1012,7 @@ void SetupPaths(void)
     libPath = nob_temp_sprintf("%s/lib", tccPath);
 
     // data and temp directories
-    dataDir = nob_temp_sprintf("%s/ic", dataDirEnv);
+    dataDir = nob_temp_sprintf("%s/%s", dataDirEnv, isDataDirHidden? ".ic": "ic");
     tempDir = nob_temp_sprintf("%s/temp", dataDir);
     // create temp and data directories if they don't exist
     assert(nob_mkdir_if_not_exists(dataDir));
