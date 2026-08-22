@@ -11,8 +11,21 @@ typedef struct mlEditBuf {
     int *els;
     int len, cap;
     int pos;
-    int fixed; // number of fixed elements at start (prompt)
+
+    char *prompt;
     int oldY, oldRows;
+
+    // front: this is for the formatted output possibly with hints
+    // but should not go into the history, so we can have a separate buffer for it
+    // synced with the main buffer when refreshing
+    struct {
+        int *els;
+        int len, cap;
+        int pos;
+        int fixed; // number of fixed elements at start (prompt)
+    } front;
+
+    int hintStart;
 } mlEditBuf;
 
 MINILINE_DEF void mlBegin(void);
@@ -49,6 +62,7 @@ typedef void (*mlCompleteFunc)(
 MINILINE_DEF void mlSetCompletionCallback(mlCompleteFunc func, void *userdata);
 MINILINE_DEF void mlAddCompletion(mlCompletions *comp, char const *replacement, char const *display);
 MINILINE_DEF void mlSetCompletionStart(mlCompletions *comp, int start);
+MINILINE_DEF void mlSetAutoHint(int enable, int bold, int color);
 
 enum mlCompleteMode {
     mlCompleteMode_Circular, // default
@@ -138,6 +152,12 @@ struct mlState {
     struct termios origTerm;
 #endif
     mlCompleter completer;
+
+    struct mlAutoHint {
+        int enable;
+        int bold;
+        int color;
+    } autoHint;
 } mlState = {0};
 
 struct mlState *st = &mlState;
@@ -179,7 +199,9 @@ enum mlKeySpecial {
 #define ML_DECLTYPE_CAST(T)
 #endif // __cplusplus
 
+#ifndef ML_DA_DEFAULT_CAP
 #define ML_DA_DEFAULT_CAP 16
+#endif
 
 #define mlDaReserve(da, new_cap, default_cap) \
     do {\
@@ -204,6 +226,13 @@ enum mlKeySpecial {
     } while (0)
 #define mlDaLast(da) (da)->els[(assert((da)->len>0 && "empty array"), (da)->len-1)]
 #define mlDaFree(da) free((da).els)
+
+#ifndef ML_MAX_HINT_ENTRIES
+#define ML_MAX_HINT_ENTRIES 4
+#endif
+#define ML_SPECIAL_KEY_HINT_ENTRY_AFTER ML_KEY_NO_UNICODE
+
+static int mlIntMin(int a, int b) { return (a < b) ? a : b; }
 
 static char *mlStrDupN(char const *s, size_t n)
 {
@@ -571,6 +600,13 @@ void mlCompletionsClear(mlCompletions *comps)
     comps->start = 0;
 }
 
+void mlSetAutoHint(int enable, int bold, int color)
+{
+    st->autoHint.enable = enable;
+    st->autoHint.bold = bold;
+    st->autoHint.color = color;
+}
+
 typedef struct mlStrBuilder {
     char *els;
     size_t len, cap;
@@ -694,27 +730,14 @@ static void mlCodePointsFromCstr(mlCodePoints *cps, char const *cstr)
 void mlEditBufRelease(mlEditBuf eb)
 {
     mlDaFree(eb);
-}
-
-static void mlEditBufFromCstr(mlEditBuf *eb, char const *cstr)
-{
-    mlCodePoints cps = {
-        .els = eb->els,
-        .len = eb->len,
-        .cap = eb->cap,
-    };
-    mlCodePointsFromCstr(&cps, cstr);
-    eb->els = cps.els;
-    assert(cps.len <= INT_MAX);
-    eb->len = (int)cps.len;
-    assert(cps.cap <= INT_MAX);
-    eb->cap = (int)cps.cap;
+    mlDaFree(eb.front);
+    free(eb.prompt);
 }
 
 static char *mlStrFromEditBuf(mlEditBuf *eb)
 {
     mlStrBuilder sb = {0};
-    for (int i = eb->fixed; i < eb->len; ++i) {
+    for (int i = 0; i < eb->len; ++i) {
         mlAppendUtf8(&sb, eb->els[i]);
     }
     mlDaAppend(&sb, '\0');
@@ -725,7 +748,7 @@ static char *mlStrFromEditBufPos(mlEditBuf *eb, int *pos)
 {
     mlStrBuilder sb = {0};
     int i;
-    for (i = eb->fixed; i < eb->len; ++i) {
+    for (i = 0; i < eb->len; ++i) {
         if (i == eb->pos) { *pos = (int)sb.len; }
         mlAppendUtf8(&sb, eb->els[i]);
     }
@@ -747,24 +770,126 @@ static int mlUtf8LengthFromCodepoint(int cp)
     }
 }
 
-static int mlEditBufOffsetFromUtf8Length(mlEditBuf *eb, int len)
+static ssize_t mlCodePointOffsetFromUtf8Offset(mlCodePoints *cps, size_t offset)
 {
-    if (len < 0) return -1;
-    if (len == 0) return 0;
-    int count = 0;
-    for (int i = eb->fixed; i < eb->len; ++i) {
-        int cp = eb->els[i];
+    if (offset == 0) return 0;
+    ssize_t countDown = (ssize_t)offset;
+    ssize_t count = 0;
+    for (size_t i = 0; i < cps->len; ++i) {
+        int cp = cps->els[i];
         int cpLen = mlUtf8LengthFromCodepoint(cp);
-        len -= cpLen;
+        countDown -= cpLen;
         count += 1;
-        if (len < 0) {
+        if (countDown < 0) {
             return -1;
-        } else if (len == 0) {
+        } else if (countDown == 0) {
             break;
         }
     }
 
     return count;
+}
+
+static int mlEditBufOffsetFromUtf8Length(mlEditBuf *eb, int len)
+{
+    mlCodePoints cps = {.els = eb->els, .len = eb->len, .cap = eb->cap};
+    assert(len >= 0);
+    ssize_t r = mlCodePointOffsetFromUtf8Offset(&cps, len);
+    assert(r <= INT_MAX);
+    return r;
+}
+
+static void mlEditBufFrontSetPrompt(mlEditBuf *eb)
+{
+    mlCodePoints cps = {
+        .els = eb->front.els,
+        .len = 0,
+        .cap = eb->front.cap,
+    };
+    mlCodePointsFromCstr(&cps, eb->prompt);
+    assert(cps.len <= INT_MAX);
+    assert(cps.cap <= INT_MAX);
+    eb->front.els = cps.els;
+    eb->front.len = (int)cps.len;
+    eb->front.cap = (int)cps.cap;
+    eb->front.fixed = eb->front.len;
+}
+
+static void mlEditBufFrontSimpStr(mlEditBuf *eb, char const *s)
+{
+    while (*s) {
+        mlDaAppend(&eb->front, (int)*s);
+        ++s;
+    }
+}
+
+static void mlEditBufFrontAppendCstr(mlEditBuf *eb, char const *s)
+{
+    mlCodePoints cps = {
+        .els = eb->front.els,
+        .len = eb->front.len,
+        .cap = eb->front.cap,
+    };
+    mlCodePointsFromCstr(&cps, s);
+    assert(cps.len <= INT_MAX);
+    assert(cps.cap <= INT_MAX);
+    eb->front.els = cps.els;
+    eb->front.len = (int)cps.len;
+    eb->front.cap = (int)cps.cap;
+}
+
+static int mlEditBufSyncFront(mlEditBuf *eb)
+{
+    int r = 0;
+    eb->front.len = eb->front.fixed;
+    eb->front.pos = eb->front.fixed;
+    if (eb->len <= 0) return r;
+    
+    int frontOff = eb->front.fixed;
+
+    {
+        mlDaAppendN(&eb->front, eb->els, eb->len);
+        eb->front.pos = frontOff+eb->pos;
+    }
+
+    if (st->autoHint.enable &&
+        eb->front.pos == eb->front.len &&
+        st->completer.func != NULL &&
+        st->completer.tabState == 0
+    ) {
+        mlCompletions comps = {0};
+        int cursorPos;
+        char *buf = mlStrFromEditBufPos(eb, &cursorPos);
+        st->completer.func(buf, cursorPos, &comps, st->completer.userdata);
+        if (comps.len == 1) {
+            int compStart = comps.start;
+            char *compStr = comps.els[0].display;
+            int bufLen = (int)strlen(buf);
+            int appendStart = bufLen-compStart;
+            if (appendStart > 0 && strncmp(compStr, buf+compStart, appendStart) == 0) {
+                // append the rest of the completion
+                mlEditBufFrontSimpStr(eb, 
+                    mlTempSprintf(ML_CSI "%d;%dm", st->autoHint.bold, st->autoHint.color));
+                mlEditBufFrontAppendCstr(eb, compStr+appendStart);
+                mlEditBufFrontSimpStr(eb, ML_CSI "0m");
+            }
+        } else if (comps.len > 1) {
+            // multiple completions
+            r = 1;
+            eb->hintStart = frontOff+mlEditBufOffsetFromUtf8Length(eb, comps.start);
+            int n = mlIntMin(comps.len, ML_MAX_HINT_ENTRIES);
+            mlEditBufFrontSimpStr(eb, 
+                mlTempSprintf(ML_CSI "%d;%dm", st->autoHint.bold, st->autoHint.color));
+            for (int i = 0; i < n; ++i) {
+                mlDaAppend(&eb->front, ML_SPECIAL_KEY_HINT_ENTRY_AFTER);
+                mlEditBufFrontAppendCstr(eb, comps.els[i].display);
+            }
+            mlEditBufFrontSimpStr(eb, ML_CSI "0m");
+        }
+        mlCompletionsClear(&comps);
+        free(buf);
+    }
+    return r;
 }
 
 static int mlMkWcwidth(int ucs);
@@ -777,6 +902,23 @@ static int mlAnsiEscapeSequenceLength(int *cps, int len)
     for (; i<len && ' '<=cps[i] && cps[i]<='/'; ++i);
     if    (i<len && '@'<=cps[i] && cps[i]<='~') { return 1+i; }
     return 0;
+}
+
+static int mlSkipAnsiEscapeSequences(mlEditBuf *eb, int i, mlOutputBuilder *ob)
+{
+    int const al = mlAnsiEscapeSequenceLength(&eb->front.els[i], eb->front.len-i);
+    if (al > 0) {
+        // escape seq is simple, no need to translate to output fmt
+        // (utf16 on windows, else utf8)
+        for (int j = 0; j < al; ++j) {
+#           ifdef _WIN32
+                mlDaAppend(ob, (WCHAR)(eb->front.els[i+j]));
+#           else
+                mlDaAppend(ob, (char)(eb->front.els[i+j]));
+#           endif
+        }
+    }
+    return al;
 }
 
 static void mlRefreshLineWithClear(mlEditBuf *eb, int isClear)
@@ -803,35 +945,42 @@ static void mlRefreshLineWithClear(mlEditBuf *eb, int isClear)
 
     if (isClear) goto writeBuf;
 
+    int multiHints = mlEditBufSyncFront(eb);
+    int hintStartX = 0;
+
     int accum = 0;
     // put the code points
-    for (int i = 0; i < eb->len; ++i) {
-        int const cp = eb->els[i];
+    for (int i = 0; i < eb->front.len; ++i) {
+        if (eb->front.pos == i) {
+            curX = accum;
+            curY = rows;
+        }
+
+        if (multiHints && eb->hintStart == i) {
+            hintStartX = accum;
+        }
+
+        int const cp = eb->front.els[i];
 
         if (cp == ML_KEY_ESCAPE) {
-            // skip escape sequences
-            int const al = mlAnsiEscapeSequenceLength(&eb->els[i], eb->len-i);
+            int const al = mlSkipAnsiEscapeSequences(eb, i, &ob);
             if (al > 0) {
-                // escape seq is simple, no need to translate to output fmt
-                // (utf16 on windows, else utf8)
-                for (int j = 0; j < al; ++j) {
-#                   ifdef _WIN32
-                        mlDaAppend(&ob, (WCHAR)(eb->els[i+j]));
-#                   else
-                        mlDaAppend(&ob, (char)(eb->els[i+j]));
-#                   endif
-                }
                 i += al-1;
                 continue;
             }
         }
 
+        if (cp == ML_SPECIAL_KEY_HINT_ENTRY_AFTER) {
+            mlObSimpStr(&ob, "\r\n"); // go to next line
+            rows += 1;
+            // move cursor to hintStartX
+            mlObSimpStr(&ob, mlTempSprintf(ML_CSI "%dG", hintStartX+1));
+            accum = hintStartX;
+            continue;
+        }
+
         int const w = mlMkWcwidth(cp);
         if (w < 0) continue;
-        if (eb->pos == i) {
-            curX = accum;
-            curY = rows;
-        }
         accum += w;
         if (accum > cols) { 
             // go to next line (wide)
@@ -851,7 +1000,7 @@ static void mlRefreshLineWithClear(mlEditBuf *eb, int isClear)
             rows += 1;
         }
     }
-    int posAtEnd = (eb->pos == eb->len);
+    int posAtEnd = (eb->front.pos == eb->front.len);
     if (accum == 0 && rows > 0) {
         if (posAtEnd) {
             // at the start of a new line
@@ -898,9 +1047,9 @@ void mlEditShow(mlEditBuf *eb)
 void mlEditSetPrompt(mlEditBuf *eb, char const *prompt)
 {
     eb->len = 0;
-    mlEditBufFromCstr(eb, prompt);
-    eb->fixed = eb->len;
-    eb->pos = eb->len;
+    eb->pos = 0;
+    eb->prompt = mlStrDup(prompt);
+    mlEditBufFrontSetPrompt(eb);
     mlRefreshLine(eb);
 }
 
@@ -919,9 +1068,8 @@ static void mlEditInsert(mlEditBuf *eb, int c)
 static void mlEditInsertCompletion(mlEditBuf *eb, char const *completion, int start)
 {
     // replace from start to pos with completion
-    int bufStart = mlEditBufOffsetFromUtf8Length(eb, start);
-    if (bufStart < 0) { return; }
-    int ebStart = eb->fixed + bufStart;
+    int ebStart = mlEditBufOffsetFromUtf8Length(eb, start);
+    if (ebStart < 0) { return; }
     int dif = eb->len - eb->pos;
     if (dif < 0) { return; }
     int replaceLen = eb->pos - ebStart;
@@ -943,8 +1091,8 @@ static void mlEditInsertCompletion(mlEditBuf *eb, char const *completion, int st
 
 static void mlEditBackspace(mlEditBuf *eb)
 {
-    if (eb->pos == eb->fixed) return;
-    if (eb->len == eb->fixed) return;
+    if (eb->pos == 0) return;
+    if (eb->len == 0) return;
     int dif = eb->len - eb->pos;
     eb->pos -= 1;
     memmove(&eb->els[eb->pos], &eb->els[eb->pos+1], dif*sizeof(int));
@@ -954,7 +1102,7 @@ static void mlEditBackspace(mlEditBuf *eb)
 
 static void mlEditDelete(mlEditBuf *eb)
 {
-    if (eb->len == eb->fixed) return;
+    if (eb->len == 0) return;
     if (eb->pos >= eb->len) return;
     int dif = eb->len - eb->pos - 1;
     memmove(&eb->els[eb->pos], &eb->els[eb->pos+1], dif*sizeof(int));
@@ -964,13 +1112,13 @@ static void mlEditDelete(mlEditBuf *eb)
 
 static void mlEditDeletePrevWord(mlEditBuf *eb)
 {
-    if (eb->pos == eb->fixed) return;
+    if (eb->pos == 0) return;
     int orig_pos = eb->pos;
     // move pos to start of previous word
-    while (eb->pos > eb->fixed && eb->els[eb->pos-1] == ' ') {
+    while (eb->pos > 0 && eb->els[eb->pos-1] == ' ') {
         eb->pos -= 1;
     }
-    while (eb->pos > eb->fixed && eb->els[eb->pos-1] != ' ') {
+    while (eb->pos > 0 && eb->els[eb->pos-1] != ' ') {
         eb->pos -= 1;
     }
     int dif = orig_pos - eb->pos;
@@ -982,7 +1130,7 @@ static void mlEditDeletePrevWord(mlEditBuf *eb)
 
 static void mlEditDeleteToEnd(mlEditBuf *eb)
 {
-    if (eb->len == eb->fixed) return;
+    if (eb->len == 0) return;
     if (eb->pos >= eb->len) return;
     eb->len = eb->pos;
     mlRefreshLine(eb);
@@ -990,15 +1138,15 @@ static void mlEditDeleteToEnd(mlEditBuf *eb)
 
 static void mlEditDeleteLine(mlEditBuf *eb)
 {
-    if (eb->len == eb->fixed) return;
-    eb->len = eb->fixed;
-    eb->pos = eb->fixed;
+    if (eb->len == 0) return;
+    eb->len = 0;
+    eb->pos = 0;
     mlRefreshLine(eb);
 }
 
 static void mlEditSwapChars(mlEditBuf *eb)
 {
-    if (eb->pos <= eb->fixed) return;
+    if (eb->pos <= 0) return;
     if (eb->pos >= eb->len) return;
     int tmp = eb->els[eb->pos-1];
     eb->els[eb->pos-1] = eb->els[eb->pos];
@@ -1009,7 +1157,7 @@ static void mlEditSwapChars(mlEditBuf *eb)
 
 static void mlEditMoveLeft(mlEditBuf *eb)
 {
-    if (eb->pos > eb->fixed) {
+    if (eb->pos > 0) {
         eb->pos -= 1;
         mlRefreshLine(eb);
     }
@@ -1025,7 +1173,7 @@ static void mlEditMoveRight(mlEditBuf *eb)
 
 static void mlEditMoveHome(mlEditBuf *eb)
 {
-    eb->pos = eb->fixed;
+    eb->pos = 0;
     mlRefreshLine(eb);
 }
 
@@ -1041,19 +1189,16 @@ static void mlEditHistoryCommit(mlEditBuf *eb, mlHistory *h)
 #ifdef MINILINE_HISTORY_NO_COMMIT_ON_RECALL
     if (h->isRecall && h->pos != 0) return;
 #endif
-    int entryLen = eb->len - eb->fixed;
-    if (entryLen == 0) return;
-    mlHistoryPush(h, &eb->els[eb->fixed], entryLen);
+    mlHistoryPush(h, eb->els, eb->len);
     h->pos = 0;
 }
 
 static void mlEditHistoryPut(mlEditBuf *eb, mlHistory *h)
 {
     if (h->isRecall) return;
-    int entryLen = eb->len - eb->fixed;
-    if (entryLen == 0) return;
+    if (eb->len == 0) return;
     mlHistoryPop(h);
-    mlHistoryPush(h, &eb->els[eb->fixed], entryLen);
+    mlHistoryPush(h, eb->els, eb->len);
     h->pos = 0;
 }
 
@@ -1072,7 +1217,7 @@ static void mlEditHistoryMove(mlEditBuf *eb, mlHistory *h, int dir)
         h->pos = h->his.len-1;
         return;
     }
-    eb->len = eb->fixed;
+    eb->len = 0;
     mlHistoryEntry he = mlHistoryAtPos(h);
     if (he.len > 0) {
         mlDaAppendN(eb, &h->buf.els[he.offset], he.len);
@@ -1108,7 +1253,7 @@ static void mlLongestCommonPrefixInput(mlStrBuilder *sb, char *input)
 static int mlEditCompleteList(mlEditBuf *eb)
 {
     int tabState = 0;
-    if (eb->pos <= eb->fixed) {
+    if (eb->pos <= 0) {
         mlBeep();
     } else if (st->completer.tabState == 1) {
         tabState = 1;
@@ -1121,7 +1266,7 @@ static int mlEditCompleteList(mlEditBuf *eb)
             codepoints.len = 0;
             mlCodePointsFromCstr(&codepoints, comp);
             for (size_t j = 0; j < codepoints.len; ++j) {
-                mlObCodePoint(&ob, (unsigned char)codepoints.els[j]);
+                mlObCodePoint(&ob, codepoints.els[j]);
             }
             if (i != comps->len - 1) {
                 mlObSimpStr(&ob, "  ");
@@ -1251,7 +1396,7 @@ char *mlEditFeed(mlEditBuf *eb)
         mlEditBackspace(eb);
         break;
     case ML_KEY_CTRL_D:
-        if (eb->len > eb->fixed) {
+        if (eb->len > 0) {
             mlEditDelete(eb);
         } else {
             mlHistoryPop(st->history);
