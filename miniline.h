@@ -70,6 +70,34 @@ enum mlCompleteMode {
 };
 MINILINE_DEF void mlSetCompletionMode(enum mlCompleteMode mode);
 
+typedef struct mlHighlights mlHighlights;
+typedef void (*mlHighlightFunc)(char const *buf, mlHighlights *hl, void *userdata);
+MINILINE_DEF void mlSetHighlightCallback(mlHighlightFunc func, void *userdata);
+MINILINE_DEF void mlAddHighlight(mlHighlights *hl, int bold, int color, int start, int len);
+
+enum mlColor {
+    mlColor_Default = 0,
+    mlColor_Black = 30,
+    mlColor_Red = 31,
+    mlColor_Green = 32,
+    mlColor_Yellow = 33,
+    mlColor_Blue = 34,
+    mlColor_Magenta = 35,
+    mlColor_Cyan = 36,
+    mlColor_White = 37,
+
+    mlColor_BrightBlack = 90,
+    mlColor_BrightRed = 91,
+    mlColor_BrightGreen = 92,
+    mlColor_BrightYellow = 93,
+    mlColor_BrightBlue = 94,
+    mlColor_BrightMagenta = 95,
+    mlColor_BrightCyan = 96,
+    mlColor_BrightWhite = 97,
+
+    mlColor_Gray = mlColor_BrightBlack,
+};
+
 // flags:
 // #define MINILINE_IGNORE_ZWJ
 // #define MINILINE_HISTORY_SKIP_DUPLICATES
@@ -152,6 +180,11 @@ struct mlState {
     struct termios origTerm;
 #endif
     mlCompleter completer;
+
+    struct mlHighlighter {
+        mlHighlightFunc func;
+        void *userdata;
+    } highlighter;
 
     struct mlAutoHint {
         int enable;
@@ -838,6 +871,66 @@ static void mlEditBufFrontAppendCstr(mlEditBuf *eb, char const *s)
     eb->front.cap = (int)cps.cap;
 }
 
+struct mlHighlights {
+    struct mlHighlightState {
+        int bold;
+        int color;
+    } *els;
+    int len;
+    int cap;
+};
+
+void mlAddHighlight(mlHighlights *hl, int bold, int color, int start, int len)
+{
+    if (start < 0 || len <= 0) return;
+    if (start+len > hl->len) return;
+    for (int i = start; i < start+len; ++i) {
+        hl->els[i].bold = bold;
+        hl->els[i].color = color;
+    }
+}
+
+void mlSetHighlightCallback(mlHighlightFunc func, void *userdata)
+{
+    st->highlighter.func = func;
+    st->highlighter.userdata = userdata;
+}
+
+static void mlHighlightClear(mlHighlights *hl)
+{
+    for (int i = 0; i < hl->len; ++i) {
+        hl->els[i].bold = 0;
+        hl->els[i].color = 0;
+    }
+}
+
+static int mlHighlightRender(mlHighlights *hl, mlEditBuf *eb)
+{
+    int prevBold = 0;
+    int prevColor = 0;
+    int extraOff = 0;
+    for (int i = 0; i < hl->len; ++i) {
+        int bold = hl->els[i].bold;
+        int color = hl->els[i].color;
+        if (eb->pos == i) { extraOff = eb->front.len-eb->pos; }
+        if (bold != prevBold || color != prevColor) {
+            if (bold == 0 && color == 0) {
+                mlEditBufFrontSimpStr(eb, ML_CSI "0m");
+            } else {
+                mlEditBufFrontSimpStr(eb, mlTempSprintf(ML_CSI "%d;%dm", bold, color));
+            }
+            prevBold = bold;
+            prevColor = color;
+        }
+        mlDaAppend(&eb->front, eb->els[i]);
+    }
+    if (eb->pos == hl->len) { extraOff = eb->front.len-eb->pos; }
+    if (prevBold != 0 || prevColor != 0) {
+        mlEditBufFrontSimpStr(eb, ML_CSI "0m");
+    }
+    return extraOff;
+}
+
 static int mlEditBufSyncFront(mlEditBuf *eb)
 {
     int r = 0;
@@ -845,17 +938,30 @@ static int mlEditBufSyncFront(mlEditBuf *eb)
     eb->front.pos = eb->front.fixed;
     if (eb->len <= 0) return r;
     
-    int frontOff = eb->front.fixed;
+    int frontOff = 0;
 
-    {
+    if (st->highlighter.func == NULL) {
         mlDaAppendN(&eb->front, eb->els, eb->len);
-        eb->front.pos = frontOff+eb->pos;
+        frontOff = eb->front.fixed;
+    } else {
+        static mlHighlights hl = {0};
+        mlDaReserve(&hl, eb->len, ML_DA_DEFAULT_CAP);
+        hl.len = eb->len;
+        mlHighlightClear(&hl);
+        char *buf = mlStrFromEditBuf(eb);
+        st->highlighter.func(buf, &hl, st->highlighter.userdata);
+        frontOff = mlHighlightRender(&hl, eb);
+        hl.len = 0;
+        free(buf);
     }
 
+    eb->front.pos = frontOff+eb->pos;
+
     if (st->autoHint.enable &&
-        eb->front.pos == eb->front.len &&
+        eb->pos == eb->len &&
         st->completer.func != NULL &&
-        st->completer.tabState == 0
+        st->completer.tabState == 0 && 
+        st->history->isRecall == 0
     ) {
         mlCompletions comps = {0};
         int cursorPos;
@@ -876,7 +982,9 @@ static int mlEditBufSyncFront(mlEditBuf *eb)
         } else if (comps.len > 1) {
             // multiple completions
             r = 1;
-            eb->hintStart = frontOff+mlEditBufOffsetFromUtf8Length(eb, comps.start);
+            int startOff = mlEditBufOffsetFromUtf8Length(eb, comps.start);
+            assert(startOff >= 0);
+            eb->hintStart = frontOff+startOff;
             int n = mlIntMin(comps.len, ML_MAX_HINT_ENTRIES);
             mlEditBufFrontSimpStr(eb, 
                 mlTempSprintf(ML_CSI "%d;%dm", st->autoHint.bold, st->autoHint.color));
@@ -1363,6 +1471,15 @@ static int mlEditComplete(mlEditBuf *eb)
     }
 }
 
+static void mlRefreshLineWithoutHint(mlEditBuf *eb)
+{
+    // hack
+    int oldEnable = st->autoHint.enable;
+    st->autoHint.enable = 0;
+    mlRefreshLine(eb);
+    st->autoHint.enable = oldEnable;
+}
+
 char *mlEditInAction = "mlEditInAction YOU SHOULD NOT SEE THIS";
 
 char *mlEditFeed(mlEditBuf *eb)
@@ -1385,11 +1502,13 @@ char *mlEditFeed(mlEditBuf *eb)
     case ML_KEY_ENTER:
     case ML_KEY_CTRL_J:
         mlEditHistoryCommit(eb, st->history);
-        mlEditMoveEnd(eb);
+        eb->pos = eb->len;
+        mlRefreshLineWithoutHint(eb);
         return mlStrFromEditBuf(eb);
     case ML_KEY_CTRL_C:
     returnEof:
         mlHistoryPop(st->history);
+        mlRefreshLineWithoutHint(eb);
         return NULL;
     case ML_KEY_BACKSPACE:
     case ML_KEY_CTRL_H:
@@ -1400,6 +1519,7 @@ char *mlEditFeed(mlEditBuf *eb)
             mlEditDelete(eb);
         } else {
             mlHistoryPop(st->history);
+            mlRefreshLineWithoutHint(eb);
             return NULL;
         }
         break;
