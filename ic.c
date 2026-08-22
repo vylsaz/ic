@@ -1667,6 +1667,70 @@ void CompleteFunc(char const *buf, int cursorPos, mlCompletions *comp, void *use
     nob_temp_rewind(mark);
 }
 
+void HighlightFunc(char const *buf, mlHighlights *hl, void *userdata)
+{
+    static char const *const cKeywords[] = {
+        "if", "else", 
+        "for", "do", "while",
+        "switch", "case", "default", 
+        "return", "goto", "auto",
+        "break", "continue",
+        "struct", "union", "enum", "const", "volatile", "static",
+        "extern", "register", "inline", "restrict",
+    };
+
+    static char const *const cTypes[] = {
+        "int", "char", "float", "double", "void", "short", "long", "signed",
+        "unsigned", "bool",
+        // known types
+        "size_t", "ssize_t", "wchar_t",
+        "int8_t", "int16_t", "int32_t", "int64_t",
+        "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+        // stdint.h
+        "intmax_t", "intptr_t", "uintmax_t", "uintptr_t",
+    };
+
+    (void) userdata;
+
+    size_t len = strlen(buf);
+    int strStoreCap = (int)(1+len);
+    char *strStore = (char *)malloc(strStoreCap);
+
+    stb_lexer lexer = {0};
+    stb_c_lexer_init(&lexer, buf, buf+len, strStore, strStoreCap);
+    while (stb_c_lexer_get_token(&lexer)) {
+        switch (lexer.token) {
+        default:
+        break; case CLEX_parse_error:
+            goto endloop;
+        break; case CLEX_id:
+            for (usz i = 0; i<sizeof(cKeywords)/sizeof(*cKeywords); ++i) {
+                if (strcmp(lexer.string, cKeywords[i])==0) {
+                    mlAddHighlight(hl, 1, mlColor_Magenta,
+                        lexer.where_firstchar-buf, 1+lexer.where_lastchar-lexer.where_firstchar);
+                    goto outloop;
+                }
+            }
+            for (usz i = 0; i<sizeof(cTypes)/sizeof(*cTypes); ++i) {
+                if (strcmp(lexer.string, cTypes[i])==0) {
+                    mlAddHighlight(hl, 1, mlColor_Blue,
+                        lexer.where_firstchar-buf, 1+lexer.where_lastchar-lexer.where_firstchar);
+                    goto outloop;
+                }
+            }
+        break; case CLEX_dqstring: case CLEX_charlit:
+            mlAddHighlight(hl, 0, mlColor_BrightYellow,
+                lexer.where_firstchar-buf, 1+lexer.where_lastchar-lexer.where_firstchar);
+        break; case CLEX_intlit: case CLEX_floatlit:
+            mlAddHighlight(hl, 0, mlColor_BrightGreen,
+                lexer.where_firstchar-buf, 1+lexer.where_lastchar-lexer.where_firstchar);
+        }
+    outloop:;
+    }
+endloop:
+    free(strStore);
+}
+
 void ExitFunc(void)
 {
     mlHistorySave(mlHistoryDefault, hisPath);
@@ -1687,6 +1751,8 @@ int main(int argc, char **argv)
 
     mlSetCompletionMode(mlCompleteMode_Circular);
     mlSetCompletionCallback(CompleteFunc, NULL);
+    mlSetAutoHint(1, 1, mlColor_Gray);
+    mlSetHighlightCallback(HighlightFunc, NULL);
     mlHistoryLoad(mlHistoryDefault, hisPath);
 
     for (int i = 1; i<argc; ++i) {
