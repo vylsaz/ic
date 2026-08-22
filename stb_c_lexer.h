@@ -86,7 +86,7 @@
 #define STB_C_LEX_OCTAL_SUFFIXES    ""  // e.g. "uUlL"
 #define STB_C_LEX_FLOAT_SUFFIXES    ""  //
 
-#define STB_C_LEX_0_IS_EOF             N  // if Y, ends parsing at '\0'; if N, returns '\0' as token
+#define STB_C_LEX_0_IS_EOF             Y  // if Y, ends parsing at '\0'; if N, returns '\0' as token
 #define STB_C_LEX_INTEGERS_AS_DOUBLES  N  // parses integers as doubles so they can be larger than 'int', but only if STB_C_LEX_STDLIB==N
 #define STB_C_LEX_MULTILINE_DSTRINGS   N  // allow newlines in double-quoted strings
 #define STB_C_LEX_MULTILINE_SSTRINGS   N  // allow newlines in single-quoted strings
@@ -672,7 +672,7 @@ int stb_c_lexer_get_token(stb_lexer *lexer)
                return stb__clex_token(lexer, CLEX_parse_error, start,start);
             if (p == lexer->eof || *p != '\'')
                return stb__clex_token(lexer, CLEX_parse_error, start,p);
-            return stb__clex_token(lexer, CLEX_charlit, start, p+1);
+            return stb__clex_token(lexer, CLEX_charlit, start, p);
          })
          goto single_char;
 
@@ -723,6 +723,8 @@ int stb_c_lexer_get_token(stb_lexer *lexer)
                   #endif
                   if (q == p+2)
                      return stb__clex_token(lexer, CLEX_parse_error, p-2,p-1);
+                  if (q == p)
+                     return stb__clex_token(lexer, CLEX_parse_error, p,q);
                   return stb__clex_parse_suffixes(lexer, CLEX_intlit, p,q, STB_C_LEX_HEX_SUFFIXES);
                   #endif
                }
